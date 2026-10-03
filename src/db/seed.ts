@@ -8,13 +8,13 @@ import {
 } from '@/db/seedData';
 
 export interface SeedReport {
-  /** Rows actually written by this call (0 when the database was preserved). */
+  /** Rows actually written by this call (0 when the store was already populated). */
   readonly categoriesWritten: number;
   readonly menuItemsWritten: number;
   readonly tablesWritten: number;
   readonly session: CashierSessionRecord;
   readonly alreadySeeded: boolean;
-  /** Stores that hold data but are missing rows, surfaced for diagnostics. */
+  /** Stores that were found empty and refilled by this call. */
   readonly incompleteStores: readonly string[];
 }
 
@@ -41,31 +41,46 @@ export async function readSeedInventory(posDb: POSDatabase): Promise<SeedInvento
  *
  * Re-seeding a populated database used to overwrite live catalog edits (a
  * re-priced burger, an 86'd item, a renamed category) on every boot. Existing
- * records are now preserved verbatim and reported as `alreadySeeded`.
+ * records are preserved verbatim and reported as `alreadySeeded`.
+ *
+ * The repair is per store rather than all-or-nothing. A terminal that is killed
+ * mid-boot, loses power or hits a quota error part way through the seed ends up
+ * with some stores written and the others not, and gating the whole seed on
+ * "all three are empty" left such a register booting forever with a zero-item
+ * catalog and no way to trade. Each empty store is refilled on its own, so an
+ * interrupted seed heals on the next boot while a populated store keeps every
+ * runtime edit it has accumulated.
  */
 export async function seedDatabase(posDb: POSDatabase): Promise<SeedReport> {
   const inventory = await readSeedInventory(posDb);
-  const storesAreEmpty = inventory.categories === 0 && inventory.menuItems === 0 && inventory.tables === 0;
 
-  if (storesAreEmpty) {
+  const categoriesMissing = inventory.categories === 0;
+  const menuItemsMissing = inventory.menuItems === 0;
+  const tablesMissing = inventory.tables === 0;
+
+  const incompleteStores: string[] = [];
+
+  if (categoriesMissing) {
     await posDb.categories.bulkPut(SEED_CATEGORIES.map((row) => ({ ...row })));
+    incompleteStores.push('categories');
+  }
+  if (menuItemsMissing) {
     await posDb.menuItems.bulkPut(SEED_MENU_ITEMS.map((row) => structuredClone(row)));
+    incompleteStores.push('menuItems');
+  }
+  if (tablesMissing) {
     await posDb.diningTables.bulkPut(SEED_TABLES.map((row) => ({ ...row })));
+    incompleteStores.push('tables');
   }
 
   const session = await ensureCashierSession(posDb);
 
-  const incompleteStores: string[] = [];
-  if (inventory.categories === 0) incompleteStores.push('categories');
-  if (inventory.menuItems === 0) incompleteStores.push('menuItems');
-  if (inventory.tables === 0) incompleteStores.push('tables');
-
   return {
-    categoriesWritten: storesAreEmpty ? SEED_CATEGORIES.length : 0,
-    menuItemsWritten: storesAreEmpty ? SEED_MENU_ITEMS.length : 0,
-    tablesWritten: storesAreEmpty ? SEED_TABLES.length : 0,
+    categoriesWritten: categoriesMissing ? SEED_CATEGORIES.length : 0,
+    menuItemsWritten: menuItemsMissing ? SEED_MENU_ITEMS.length : 0,
+    tablesWritten: tablesMissing ? SEED_TABLES.length : 0,
     session,
-    alreadySeeded: !storesAreEmpty,
+    alreadySeeded: incompleteStores.length === 0,
     incompleteStores,
   };
 }

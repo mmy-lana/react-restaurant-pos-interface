@@ -451,7 +451,12 @@ export function posReducer(state: ActivePOSState, action: POSAction): ActivePOSS
       );
       if (!row) return state;
 
-      const nextQuantity = row.quantity + action.payload.delta;
+      // DATA-02: the stepper is clamped to the same 0..99 window the staged
+      // quantity uses. Without the upper bound a held or spammed increment
+      // could mint an unbounded line that no register could ring, print or
+      // reconcile; the lower bound keeps the existing "step to zero removes the
+      // row" behaviour intact.
+      const nextQuantity = Math.min(99, Math.max(0, row.quantity + action.payload.delta));
       if (nextQuantity <= 0) {
         order.lineItems = order.lineItems.filter(
           (candidate) => candidate.clientLineItemId !== action.payload.clientLineItemId,
@@ -567,8 +572,15 @@ export function posReducer(state: ActivePOSState, action: POSAction): ActivePOSS
 
     case 'RESTORE_ORDER': {
       const restored = structuredClone(action.payload) as unknown as OrderRecord;
+      // DATA-04: tickets written before the per-row tax snapshot existed carry
+      // no `taxRatePercent`. Leaving it undefined would hand the summary engine
+      // a row it has to price by back-deriving a rate from rounded tax, so
+      // every restored row is normalised onto the register's configured rate.
       restored.lineItems = restored.lineItems.map((lineItem) => ({
         ...lineItem,
+        taxRatePercent: Number.isFinite(lineItem.taxRatePercent)
+          ? lineItem.taxRatePercent
+          : DEFAULT_TAX_RATE_PERCENT,
         specialInstructions: sanitizePrinterSafeText(lineItem.specialInstructions),
       }));
       restored.note = restored.note ? sanitizePrinterSafeText(restored.note) : restored.note;
@@ -834,6 +846,14 @@ export function POSProvider({ children }: POSProviderProps) {
   }, [dispatch, mintNextOrderNumber]);
 
   const parkCurrentOrder = useCallback(async () => {
+    // FIN-01: parking owns the register until its transaction lands. A second
+    // tap (or a shortcut pressed while the first park is still writing) would
+    // commit the same snapshot twice and mint a duplicate parked ticket.
+    if (state.isMutating) {
+      AudioFeedback.playWarning();
+      return;
+    }
+
     const order = state.currentOrder;
     if (order.lineItems.length === 0) {
       dispatch({
@@ -856,7 +876,7 @@ export function POSProvider({ children }: POSProviderProps) {
 
     AudioFeedback.playChime();
     await startNewOrder();
-  }, [commitOrder, dispatch, startNewOrder, state.currentOrder]);
+  }, [commitOrder, dispatch, startNewOrder, state.currentOrder, state.isMutating]);
 
   /**
    * Records a tender. Partial tenders stay on the ticket (split payment) while
@@ -865,6 +885,15 @@ export function POSProvider({ children }: POSProviderProps) {
    */
   const settleOrder = useCallback(
     async (payment: PaymentRecord) => {
+      // FIN-01: a tender is a single-shot financial event. Re-entering while the
+      // previous tender's transaction is still open would append the same
+      // payment twice, double the drawer increment and settle the balance from
+      // a snapshot the cashier never saw.
+      if (state.isMutating) {
+        AudioFeedback.playWarning();
+        return;
+      }
+
       const order = state.currentOrder;
       const payments = [...order.payments, payment];
       const summary = FinancialEngine.calculateOrderSummary(
@@ -909,7 +938,7 @@ export function POSProvider({ children }: POSProviderProps) {
 
       AudioFeedback.playChime();
     },
-    [commitOrder, dispatch, startNewOrder, state.activeSession, state.currentOrder],
+    [commitOrder, dispatch, startNewOrder, state.activeSession, state.currentOrder, state.isMutating],
   );
 
   const commitNumpadValue = useCallback(
@@ -994,6 +1023,12 @@ export function POSProvider({ children }: POSProviderProps) {
       },
       setSearchQuery: (query) => dispatch({ type: 'SET_SEARCH_QUERY', payload: query }),
       openItem: (menuItem) => {
+        // CONC-01: a persistence thunk owns the ticket until its transaction
+        // lands. Editing rows behind an in-flight commit would mutate the order
+        // that the snapshot already captured, so those edits would be written
+        // back over (or silently dropped by) the commit that is running now.
+        if (state.isMutating) return;
+
         AudioFeedback.triggerBeep(680, 0.035, 'sine');
 
         if (!menuItem.isAvailable) {
@@ -1014,8 +1049,13 @@ export function POSProvider({ children }: POSProviderProps) {
 
         dispatch({ type: 'ADD_ITEM_DIRECT', payload: menuItem });
       },
-      addItemDirect: (menuItem) => dispatch({ type: 'ADD_ITEM_DIRECT', payload: menuItem }),
+      addItemDirect: (menuItem) => {
+        if (state.isMutating) return;
+        dispatch({ type: 'ADD_ITEM_DIRECT', payload: menuItem });
+      },
       customizeItem: (menuItem) => {
+        if (state.isMutating) return;
+
         if (!menuItem.isAvailable) {
           AudioFeedback.playWarning();
           return;
@@ -1024,6 +1064,8 @@ export function POSProvider({ children }: POSProviderProps) {
         AudioFeedback.triggerBeep(700, 0.04, 'triangle');
       },
       submitStagedItem: () => {
+        if (state.isMutating) return;
+
         const item = state.stagedMenuItem;
         if (!item) return;
 
@@ -1043,9 +1085,12 @@ export function POSProvider({ children }: POSProviderProps) {
         dispatch({ type: 'UPDATE_STAGED_DRAFT', payload: { groupId, optionId } }),
       setStagedQuantity: (quantity) => dispatch({ type: 'SET_STAGED_QUANTITY', payload: quantity }),
       setStagedNote: (note) => dispatch({ type: 'SET_STAGED_NOTE', payload: note }),
-      incrementQuantity: (clientLineItemId, delta) =>
-        dispatch({ type: 'UPDATE_ITEM_QUANTITY', payload: { clientLineItemId, delta } }),
+      incrementQuantity: (clientLineItemId, delta) => {
+        if (state.isMutating) return;
+        dispatch({ type: 'UPDATE_ITEM_QUANTITY', payload: { clientLineItemId, delta } });
+      },
       removeItem: (clientLineItemId) => {
+        if (state.isMutating) return;
         dispatch({ type: 'REMOVE_ITEM', payload: { clientLineItemId } });
         AudioFeedback.playTick();
       },
@@ -1087,9 +1132,12 @@ export function POSProvider({ children }: POSProviderProps) {
         dispatch({ type: 'SET_STAGED_LINE_INDEX', payload: rowIndex });
         AudioFeedback.triggerBeep(700, 0.04, 'triangle');
       },
-      applyItemDiscount: (clientLineItemId, discountInCents) =>
-        dispatch({ type: 'APPLY_ITEM_DISCOUNT', payload: { clientLineItemId, discountInCents } }),
+      applyItemDiscount: (clientLineItemId, discountInCents) => {
+        if (state.isMutating) return;
+        dispatch({ type: 'APPLY_ITEM_DISCOUNT', payload: { clientLineItemId, discountInCents } });
+      },
       applyOrderDiscount: (discountInCents) => {
+        if (state.isMutating) return;
         dispatch({ type: 'APPLY_ORDER_DISCOUNT', payload: { discountInCents } });
         AudioFeedback.playTick();
       },
@@ -1185,6 +1233,7 @@ export function POSProvider({ children }: POSProviderProps) {
       settleOrder,
       startNewOrder,
       state.currentOrder.lineItems.length,
+      state.isMutating,
       state.stagedMenuItem,
       state.stagedModifierDraft,
       state.stagedNote,

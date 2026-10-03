@@ -163,7 +163,10 @@ export function PaymentCheckoutModal({
   };
 
   const handleSettle = async (): Promise<void> => {
-    if (balanceInCents <= 0 || appliedAmountInCents <= 0) {
+    // FIN-01: the tender is refused while a commit owns the register, and while
+    // there is nothing legitimate to book. A double tap (or a wedged keyboard
+    // wedge repeating the key) must never post the same tender twice.
+    if (isMutating || balanceInCents <= 0 || appliedAmountInCents <= 0) {
       AudioFeedback.playWarning();
       return;
     }

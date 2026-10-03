@@ -94,6 +94,29 @@ export function POSLayoutShell(): React.JSX.Element {
 
   /* ----------------------------------------------------------- shortcuts */
 
+  /**
+   * SEC-01: a register shortcut is only trustworthy when the register is
+   * actually in front of the cashier. While an overlay owns the screen (or a
+   * commit is in flight) the focus trap belongs to that overlay, so `/`, `n`
+   * and `t` are ignored rather than dragging focus or the ticket sideways
+   * underneath a dialog that is still open. `Enter` and `Escape` are exempt:
+   * they are how the active overlay is confirmed and dismissed.
+   *
+   * The reducer's `activeModal` only covers the overlays it owns; the drawer,
+   * the ticket sheet and the two header dialogs are local shell state, and they
+   * trap focus just as firmly. All of them count as busy here — otherwise the
+   * keys land on whatever sits behind the dialog, which is how a stray `/`
+   * ends up typing into the catalog search during checkout.
+   */
+  const isOverlayBusy =
+    state.activeModal !== 'none' ||
+    state.isNumpadOpen ||
+    state.isMutating ||
+    isTableDrawerOpen ||
+    isHistoryOpen ||
+    isHelpOpen ||
+    isTicketSheetOpen;
+
   useRegisterShortcuts({
     onSubmit: (event) => {
       // The register owns Enter outside of text fields; consuming it stops the
@@ -118,13 +141,18 @@ export function POSLayoutShell(): React.JSX.Element {
       if (isTicketSheetOpen) setTicketSheetOpen(false);
     },
     onFocusSearch: () => {
+      if (isOverlayBusy) return;
       document.querySelector<HTMLInputElement>('[data-testid="catalog-search-input"]')?.focus();
     },
     onNewOrder: () => {
+      if (isOverlayBusy) return;
       if (order.lineItems.length === 0) return;
       void actions.parkCurrentOrder();
     },
-    onOpenTables: () => setTableDrawerOpen(true),
+    onOpenTables: () => {
+      if (isOverlayBusy) return;
+      setTableDrawerOpen(true);
+    },
   });
 
   /* --------------------------------------------------------------- views */
