@@ -1,0 +1,194 @@
+import { X } from 'lucide-react';
+import { useCallback, useEffect, useId, useRef, type ReactNode } from 'react';
+import { cn } from '@/utils/cn';
+import { AudioFeedback } from '@/utils/audioFeedback';
+
+export type ModalSize = 'sm' | 'md' | 'lg' | 'xl';
+
+export interface ModalShellProps {
+  readonly isOpen: boolean;
+  readonly onClose: () => void;
+  readonly title: string;
+  readonly subtitle?: string;
+  readonly children: ReactNode;
+  /** Sticky action bar pinned to the bottom of the panel. */
+  readonly footer?: ReactNode;
+  readonly size?: ModalSize;
+  /** Blocks backdrop/Escape dismissal, e.g. while a payment settles. */
+  readonly preventClose?: boolean;
+  readonly closeLabel?: string;
+  readonly testId?: string;
+  readonly className?: string;
+}
+
+const SIZE_STYLES: Record<ModalSize, string> = {
+  sm: 'sm:max-w-md',
+  md: 'sm:max-w-2xl',
+  lg: 'sm:max-w-4xl',
+  xl: 'sm:max-w-6xl',
+};
+
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled]):not([type="hidden"])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
+/**
+ * Full-screen touch overlay: bottom sheet on handhelds, centered panel on
+ * iPad/desktop, with a physical close button, Escape handling, scroll lock and
+ * a keyboard focus trap.
+ */
+export function ModalShell({
+  isOpen,
+  onClose,
+  title,
+  subtitle,
+  children,
+  footer,
+  size = 'md',
+  preventClose = false,
+  closeLabel = 'Close',
+  testId = 'modal-shell',
+  className,
+}: ModalShellProps) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+  const titleId = useId();
+  const subtitleId = useId();
+
+  const requestClose = useCallback(() => {
+    if (preventClose) {
+      AudioFeedback.playWarning();
+      return;
+    }
+    AudioFeedback.playTick();
+    onClose();
+  }, [onClose, preventClose]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+
+    previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
+    const { body } = document;
+    const previousOverflow = body.style.overflow;
+    body.style.overflow = 'hidden';
+
+    const panel = panelRef.current;
+    const firstFocusable = panel?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
+    (firstFocusable ?? panel)?.focus({ preventScroll: true });
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        requestClose();
+        return;
+      }
+
+      if (event.key !== 'Tab' || !panel) return;
+
+      const focusable = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+        (element) => element.offsetParent !== null || element === document.activeElement,
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        panel.focus({ preventScroll: true });
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+
+      if (event.shiftKey && (active === first || active === panel)) {
+        event.preventDefault();
+        last.focus({ preventScroll: true });
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus({ preventScroll: true });
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      body.style.overflow = previousOverflow;
+      previouslyFocusedRef.current?.focus?.({ preventScroll: true });
+    };
+  }, [isOpen, requestClose]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 backdrop-blur-sm sm:items-center sm:p-6"
+      data-testid={`${testId}-overlay`}
+    >
+      <button
+        type="button"
+        aria-label="Dismiss modal"
+        tabIndex={-1}
+        onClick={requestClose}
+        className="absolute inset-0 h-full w-full cursor-default bg-transparent"
+        data-testid={`${testId}-backdrop`}
+      />
+
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={subtitle ? subtitleId : undefined}
+        tabIndex={-1}
+        data-testid={testId}
+        className={cn(
+          'relative flex max-h-[92vh] w-full flex-col overflow-hidden border border-line bg-surface shadow-tactical outline-none',
+          'rounded-t-panel sm:rounded-panel',
+          SIZE_STYLES[size],
+          className,
+        )}
+      >
+        <header className="flex shrink-0 items-start gap-3 border-b border-line bg-surface-raised px-4 py-3 sm:px-5">
+          <div className="min-w-0 flex-1">
+            <h2
+              id={titleId}
+              className="truncate text-base font-bold uppercase tracking-wider text-ink sm:text-lg"
+            >
+              {title}
+            </h2>
+            {subtitle && (
+              <p id={subtitleId} className="mt-0.5 truncate font-mono text-xs text-ink-muted">
+                {subtitle}
+              </p>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={requestClose}
+            disabled={preventClose}
+            aria-label={closeLabel}
+            data-testid={`${testId}-close`}
+            className="flex h-touch w-touch shrink-0 items-center justify-center rounded-xl border border-line bg-canvas-raised text-ink-muted transition-transform duration-75 active:scale-95 active:bg-surface active:text-ink disabled:opacity-40"
+          >
+            <X className="h-6 w-6" aria-hidden="true" />
+          </button>
+        </header>
+
+        <div className="scrollbar-tactical min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
+          {children}
+        </div>
+
+        {footer && (
+          <footer className="safe-bottom shrink-0 border-t border-line bg-surface-raised px-4 py-3 sm:px-5">
+            {footer}
+          </footer>
+        )}
+      </div>
+    </div>
+  );
+}

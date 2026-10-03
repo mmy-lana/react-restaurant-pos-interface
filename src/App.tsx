@@ -1,5 +1,6 @@
 import { AlertTriangle, Database, Loader2, RotateCcw, ShieldCheck } from 'lucide-react';
 import { POSProvider } from '@/context/POSContext';
+import { PrimitivesShowcase } from '@/components/showcase/PrimitivesShowcase';
 import { usePOS } from '@/hooks/usePOS';
 import { formatCents } from '@/utils/financial';
 
@@ -126,9 +127,9 @@ function BootConsole(): React.JSX.Element {
 }
 
 export default function App(): React.JSX.Element {
-  return (
-    <POSProvider>
-      <BootConsole />
-    </POSProvider>
-  );
+  const showPrimitivesShowcase =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('showcase') === 'primitives';
+
+  return <POSProvider>{showPrimitivesShowcase ? <PrimitivesShowcase /> : <BootConsole />}</POSProvider>;
 }
