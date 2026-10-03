@@ -21,11 +21,17 @@ export interface ProductTileProps {
 /**
  * Catalog tile.
  *
- * Layout contract: the primary "ring it" target owns the whole card through a
- * stretched `after` pseudo-element, while the customize control is a real
- * sibling sitting in its own flex column. Nothing is absolutely positioned over
- * the price, and there is no nested interactive element inside the primary
- * button.
+ * Layout contract (single full-width column, no docked side rail):
+ * - header row : title on the left, prep timer and the 44x44 customize control
+ *                on the right;
+ * - footer row : category and modifier badge on the left, price on the right;
+ * - tap surface: one `product-ring-*` button stretched across the whole card and
+ *                sitting under the content layers, so no interactive element is
+ *                nested and no control can ever be drawn on top of the price.
+ *
+ * The content rows are `pointer-events-none` and the customize control opts back
+ * in, which keeps the whole card tappable (the title is the biggest target) while
+ * the customize button stays independently clickable.
  *
  * Availability is communicated by more than colour: sold-out items are struck
  * through, labelled "86'd" and refuse to fire, so the state stays obvious under
@@ -51,7 +57,7 @@ export function ProductTile({
       data-available={item.isAvailable}
       data-price-cents={item.priceInCents}
       className={cn(
-        'relative isolate flex min-h-[110px] flex-row items-stretch gap-2 overflow-hidden rounded-panel border p-3',
+        'relative isolate flex min-h-[115px] flex-col justify-between overflow-hidden rounded-panel border p-3',
         'transition-transform duration-75 sm:min-h-[120px]',
         isSoldOut
           ? 'border-line bg-surface/60 opacity-70'
@@ -67,6 +73,43 @@ export function ProductTile({
         />
       )}
 
+      {/* Header row: title on the left, timer and inline customize control on the right. */}
+      <div className="pointer-events-none relative z-10 flex items-start justify-between gap-2">
+        <span
+          className={cn(
+            'line-clamp-2 text-sm font-semibold leading-snug sm:text-base',
+            isSoldOut ? 'text-ink-subtle line-through' : 'text-ink',
+          )}
+        >
+          {item.name}
+        </span>
+
+        <div className="flex shrink-0 items-center gap-1.5">
+          {isSoldOut ? (
+            <Badge label="86'd" tone="danger" pulse testId="tile-sold-out" />
+          ) : (
+            <PreparationTimer minutes={item.preparationMinutes} />
+          )}
+
+          {showCustomize && (
+            <button
+              type="button"
+              onClick={(event) => {
+                // Keep the tap from also reaching the ring surface underneath.
+                event.stopPropagation();
+                onCustomize?.(item);
+              }}
+              aria-label={`Customize ${item.name}`}
+              data-testid={`product-customize-${item.id}`}
+              className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-lg border border-line bg-canvas-raised text-ink-muted transition-transform duration-75 active:scale-95 active:text-ink"
+            >
+              <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Main tap surface, stretched across the entire card. */}
       <button
         type="button"
         onClick={() => onPress(item)}
@@ -74,72 +117,39 @@ export function ProductTile({
         aria-label={`Ring ${item.name}, ${formatCents(item.priceInCents)}`}
         data-testid={`product-ring-${item.id}`}
         className={cn(
-          'flex min-w-0 flex-1 flex-col justify-between gap-2 text-left',
-          // Stretches the tap target across the full card without nesting a
-          // second interactive element inside this button.
-          'after:absolute after:inset-0 after:content-[""]',
-          'transition-transform duration-75 active:scale-[0.99]',
-          isSoldOut ? 'cursor-not-allowed' : 'active:bg-surface-raised/40',
+          'absolute inset-0 z-0 h-full w-full text-left transition-transform duration-75 active:scale-[0.99]',
+          isSoldOut ? 'cursor-not-allowed' : 'cursor-pointer active:bg-surface-raised/40',
         )}
-      >
-        <span className="flex flex-wrap items-start justify-between gap-2">
-          <span
-            className={cn(
-              'line-clamp-2 text-sm font-semibold leading-snug sm:text-base',
-              isSoldOut ? 'text-ink-subtle line-through' : 'text-ink',
-            )}
-          >
-            {item.name}
+      />
+
+      {/* Footer row: category and modifier badge on the left, price on the right. */}
+      <div className="pointer-events-none relative z-10 mt-2 flex items-end justify-between gap-2">
+        <div className="flex min-w-0 flex-1 flex-col items-start gap-1">
+          <span className="truncate font-mono text-[10px] uppercase tracking-widest text-ink-subtle">
+            {categoryName ?? item.sku}
           </span>
-
-          {isSoldOut ? (
-            <Badge label="86'd" tone="danger" pulse testId="tile-sold-out" />
-          ) : (
-            <PreparationTimer minutes={item.preparationMinutes} />
-          )}
-        </span>
-
-        <span className="flex items-end justify-between gap-2">
-          <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
-            <span className="truncate font-mono text-[10px] uppercase tracking-widest text-ink-subtle">
-              {categoryName ?? item.sku}
-            </span>
-            {hasModifiers && !isSoldOut && (
-              <Badge
-                label={requiresChoice ? 'Required' : 'Options'}
-                tone={requiresChoice ? 'info' : 'muted'}
-                icon={<Layers className="h-3 w-3" aria-hidden="true" />}
-                testId="tile-modifier-badge"
-              />
-            )}
-          </span>
-
-          <span className="shrink-0">
-            <PriceDisplay
-              amountInCents={item.priceInCents}
-              size="lg"
-              tone={isSoldOut ? 'muted' : 'primary'}
-              testId={`product-price-${item.id}`}
+          {hasModifiers && !isSoldOut && (
+            <Badge
+              label={requiresChoice ? 'Required' : 'Options'}
+              tone={requiresChoice ? 'info' : 'muted'}
+              icon={<Layers className="h-3 w-3" aria-hidden="true" />}
+              testId="tile-modifier-badge"
             />
-          </span>
-        </span>
-      </button>
+          )}
+        </div>
 
-      {showCustomize && (
-        <button
-          type="button"
-          onClick={() => onCustomize?.(item)}
-          aria-label={`Customize ${item.name}`}
-          data-testid={`product-customize-${item.id}`}
-          className="relative z-10 flex w-touch shrink-0 flex-col items-center justify-center gap-1 self-stretch rounded-lg border border-line bg-canvas-raised text-ink-muted transition-transform duration-75 active:scale-95 active:text-ink"
-        >
-          <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
-          <span className="font-mono text-[8px] uppercase leading-none tracking-widest">Edit</span>
-        </button>
-      )}
+        <div className="shrink-0">
+          <PriceDisplay
+            amountInCents={item.priceInCents}
+            size="lg"
+            tone={isSoldOut ? 'muted' : 'primary'}
+            testId={`product-price-${item.id}`}
+          />
+        </div>
+      </div>
 
       {isSoldOut && (
-        <span className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 bg-canvas/70 font-mono text-xs uppercase tracking-widest text-danger">
+        <span className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center gap-2 bg-canvas/70 font-mono text-xs uppercase tracking-widest text-danger">
           <TriangleAlert className="h-4 w-4" aria-hidden="true" />
           Unavailable
         </span>
