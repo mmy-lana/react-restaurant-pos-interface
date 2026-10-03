@@ -70,6 +70,12 @@ export function TableManagementDrawer({
   };
 
   useEffect(() => {
+    // A11Y-01: the drawer owns a document-wide keydown listener and a
+    // capturing click listener. Leaving them attached while the panel is closed
+    // makes a hidden component intercept every keystroke and every click
+    // capture on the document for the lifetime of the terminal session.
+    if (!isOpen) return;
+
     const blockGhostClick = (event: MouseEvent): void => {
       if (performance.now() > ghostClickGuardUntilRef.current) return;
       // Only keyboard-synthesised activations produce a ghost click:
@@ -85,8 +91,6 @@ export function TableManagementDrawer({
     };
 
     const handleKeyDown = (event: KeyboardEvent): void => {
-      if (!isOpen) return;
-
       if (event.key === 'Escape') {
         event.preventDefault();
         ghostClickGuardUntilRef.current = performance.now() + 350;

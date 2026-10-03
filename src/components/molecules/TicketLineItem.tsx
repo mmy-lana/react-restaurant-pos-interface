@@ -14,6 +14,13 @@ export interface TicketLineItemProps {
   readonly onEdit?: (clientLineItemId: UUID) => void;
   readonly onDiscount?: (clientLineItemId: UUID) => void;
   readonly compact?: boolean;
+  /**
+   * Disables every row control. Set while a persistence thunk owns the
+   * register: an edit made in that window would be written over (or dropped by)
+   * the commit already in flight, so the row reports itself as busy instead of
+   * accepting a touch that goes nowhere.
+   */
+  readonly disabled?: boolean;
 }
 
 /**
@@ -29,6 +36,7 @@ export function TicketLineItem({
   onEdit,
   onDiscount,
   compact = false,
+  disabled = false,
 }: TicketLineItemProps) {
   const hasModifiers = lineItem.selectedModifiers.length > 0;
   const hasNote = lineItem.specialInstructions.trim().length > 0;
@@ -50,10 +58,11 @@ export function TicketLineItem({
 
         <button
           type="button"
+          disabled={disabled}
           onClick={() => onIncrement(lineItem.clientLineItemId, 1)}
           aria-label={`Increase quantity of ${lineItem.name}`}
           data-testid={`ticket-line-increase-${lineItem.clientLineItemId}`}
-          className="flex h-touch w-touch items-center justify-center rounded-lg border border-line bg-surface text-ink transition-transform duration-75 active:scale-95 active:bg-surface-raised"
+          className="flex h-touch w-touch items-center justify-center rounded-lg border border-line bg-surface text-ink transition-transform duration-75 active:scale-95 active:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Plus className="h-5 w-5" aria-hidden="true" />
         </button>
@@ -67,10 +76,11 @@ export function TicketLineItem({
 
         <button
           type="button"
+          disabled={disabled}
           onClick={() => onIncrement(lineItem.clientLineItemId, -1)}
           aria-label={`Decrease quantity of ${lineItem.name}`}
           data-testid={`ticket-line-decrease-${lineItem.clientLineItemId}`}
-          className="flex h-touch w-touch items-center justify-center rounded-lg border border-line bg-surface text-ink transition-transform duration-75 active:scale-95 active:bg-surface-raised"
+          className="flex h-touch w-touch items-center justify-center rounded-lg border border-line bg-surface text-ink transition-transform duration-75 active:scale-95 active:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Minus className="h-5 w-5" aria-hidden="true" />
         </button>
@@ -122,10 +132,11 @@ export function TicketLineItem({
           {onEdit && (
             <button
               type="button"
+              disabled={disabled}
               onClick={() => onEdit(lineItem.clientLineItemId)}
               aria-label={`Edit modifiers for ${lineItem.name}`}
               data-testid={`ticket-line-edit-${lineItem.clientLineItemId}`}
-              className="inline-flex min-h-touch items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold uppercase tracking-wide text-ink-muted transition-transform duration-75 active:scale-95 active:bg-surface-raised active:text-ink"
+              className="inline-flex min-h-touch items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold uppercase tracking-wide text-ink-muted transition-transform duration-75 active:scale-95 active:bg-surface-raised active:text-ink disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
               Edit
@@ -135,10 +146,11 @@ export function TicketLineItem({
           {onDiscount && (
             <button
               type="button"
+              disabled={disabled}
               onClick={() => onDiscount(lineItem.clientLineItemId)}
               aria-label={`Apply a discount to ${lineItem.name}`}
               data-testid={`ticket-line-discount-action-${lineItem.clientLineItemId}`}
-              className="inline-flex min-h-touch items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold uppercase tracking-wide text-ink-muted transition-transform duration-75 active:scale-95 active:bg-surface-raised active:text-ink"
+              className="inline-flex min-h-touch items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold uppercase tracking-wide text-ink-muted transition-transform duration-75 active:scale-95 active:bg-surface-raised active:text-ink disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Percent className="h-3.5 w-3.5" aria-hidden="true" />
               Discount
@@ -147,10 +159,11 @@ export function TicketLineItem({
 
           <button
             type="button"
+            disabled={disabled}
             onClick={() => onRemove(lineItem.clientLineItemId)}
             aria-label={`Remove ${lineItem.name} from the ticket`}
             data-testid={`ticket-line-remove-${lineItem.clientLineItemId}`}
-            className="inline-flex min-h-touch items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold uppercase tracking-wide text-danger transition-transform duration-75 active:scale-95 active:bg-danger/15"
+            className="inline-flex min-h-touch items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold uppercase tracking-wide text-danger transition-transform duration-75 active:scale-95 active:bg-danger/15 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
             Remove

@@ -362,6 +362,11 @@ let uuidFallbackCounter = 0;
  * `crypto.getRandomValues()`. The last-resort branch (no Web Crypto at all)
  * uses a monotonic counter rather than a pseudo-random generator, which is
  * predictable and therefore unsuitable for payment and ticket identifiers.
+ *
+ * That counter branch still has to emit a *syntactically valid* RFC 4122
+ * version 4 UUID: order numbers, payment records and table keys are matched by
+ * that shape in reports and integrations, and a bespoke `id-<base36>` string
+ * breaks every consumer that expects 8-4-4-4-12 hex.
  */
 export function createUuid(): UUID {
   const cryptoRef: Crypto | undefined =
@@ -372,15 +377,38 @@ export function createUuid(): UUID {
   }
 
   if (cryptoRef && typeof cryptoRef.getRandomValues === 'function') {
-    const bytes = cryptoRef.getRandomValues(new Uint8Array(16));
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    return formatUuidBytes(
+      cryptoRef.getRandomValues(new Uint8Array(16)),
+    );
   }
 
   uuidFallbackCounter += 1;
-  return `id-${Date.now().toString(36)}-${uuidFallbackCounter.toString(36)}`;
+  // 8 bytes of millisecond timestamp followed by 8 bytes of monotonic counter:
+  // no entropy, but strictly increasing, so two ids minted by one terminal can
+  // never collide the way a repeated `Date.now()` alone could.
+  const timestampHex = Date.now().toString(16).padStart(16, '0').slice(-16);
+  const counterHex = uuidFallbackCounter.toString(16).padStart(16, '0').slice(-16);
+  return formatUuidBytes(hexToBytes(`${timestampHex}${counterHex}`));
+}
+
+/** Renders 16 bytes as a version 4, variant 1 UUID in 8-4-4-4-12 hex form. */
+function formatUuidBytes(bytes: Uint8Array): UUID {
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** Parses a hex string of even length into bytes, padding an odd tail with 0. */
+function hexToBytes(hex: string): Uint8Array {
+  const normalized = hex.length % 2 === 0 ? hex : `${hex}0`;
+  const bytes = new Uint8Array(normalized.length / 2);
+
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(normalized.slice(index * 2, index * 2 + 2), 16) || 0;
+  }
+
+  return bytes;
 }
 
 /**

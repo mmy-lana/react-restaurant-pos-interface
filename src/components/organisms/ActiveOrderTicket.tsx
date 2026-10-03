@@ -222,6 +222,7 @@ export function ActiveOrderTicket({
                       ? onOpenItemDiscount(clientLineItemId)
                       : onApplyItemDiscount(clientLineItemId, DEFAULT_LINE_DISCOUNT_IN_CENTS)
                   }
+                  disabled={isMutating}
                   compact
                 />
               </li>
