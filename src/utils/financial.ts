@@ -27,6 +27,49 @@ const USD_CURRENCY_FORMATTER = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
 });
 
+/**
+ * Round-up denominations used to build the tactical tender ladder, in cents.
+ * The ladder always terminates: every step yields a candidate strictly greater
+ * than the current maximum, so the filler loop below cannot spin forever.
+ */
+const QUICK_CASH_STEPS_IN_CENTS: readonly number[] = [500, 1000, 2000, 5000, 10000];
+
+/**
+ * Returns `value` when it is a usable number and `fallback` otherwise.
+ *
+ * `NaN` and `Infinity` are contagious: once either reaches an `OrderRecord` they
+ * serialize into IndexedDB and re-emerge as `null`, permanently poisoning the
+ * ledger. Every externally supplied figure therefore passes through this guard
+ * before it can be summed, prorated or persisted.
+ */
+function finiteOr(value: number, fallback: number): number {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * Effective tax rate (as a fraction, e.g. `0.0825`) for a ticket row.
+ *
+ * The row's snapshotted `taxRatePercent` is authoritative. Only rows restored
+ * from a database written before the snapshot existed fall back to the derived
+ * `taxInCents / subtotalInCents` ratio, which carries the row's own rounding
+ * error and is therefore a last resort rather than the normal path.
+ */
+function resolveTaxRate(item: OrderLineItem): number {
+  const snapshottedRate = item.taxRatePercent;
+
+  if (snapshottedRate !== undefined && Number.isFinite(snapshottedRate)) {
+    return snapshottedRate / 100;
+  }
+
+  const itemSubtotalInCents = finiteOr(item.subtotalInCents, 0);
+  return itemSubtotalInCents > 0 ? finiteOr(item.taxInCents, 0) / itemSubtotalInCents : 0;
+}
+
+/** Whole units on a row, defaulting to zero rather than propagating `NaN`. */
+function resolveQuantity(item: OrderLineItem): number {
+  return Math.max(0, Math.floor(finiteOr(item.quantity, 0)));
+}
+
 export interface LineItemComputation {
   readonly unitPriceInCents: Cents;
   readonly subtotalInCents: Cents;
@@ -40,6 +83,10 @@ export const FinancialEngine = {
    *
    * `itemDiscount` is an absolute cent amount applied to the whole row
    * (line level discount), never a percentage.
+   *
+   * Every argument is sanitized before use: a non-finite price, modifier
+   * delta, quantity, discount or tax rate degrades to a neutral value instead
+   * of poisoning the row with `NaN`.
    */
   calculateLineItem(
     basePrice: Cents,
@@ -48,12 +95,19 @@ export const FinancialEngine = {
     itemDiscount: Cents,
     taxRatePercent: number,
   ): LineItemComputation {
-    const safeQuantity = Math.max(1, Math.floor(quantity));
-    const modifierSum = modifiers.reduce((acc, mod) => acc + mod.priceDeltaInCents, 0);
-    const unitPriceInCents = Math.max(0, basePrice + modifierSum);
+    const safeBasePrice = Math.max(0, finiteOr(basePrice, 0));
+    const safeQuantity = Math.max(1, Math.floor(finiteOr(quantity, 1)));
+    const safeDiscount = Math.max(0, finiteOr(itemDiscount, 0));
+    const safeTaxRatePercent = finiteOr(taxRatePercent, 0);
+
+    const modifierSum = modifiers.reduce(
+      (acc, mod) => acc + finiteOr(mod.priceDeltaInCents, 0),
+      0,
+    );
+    const unitPriceInCents = Math.max(0, safeBasePrice + modifierSum);
     const grossPrice = unitPriceInCents * safeQuantity;
-    const subtotalInCents = Math.max(0, grossPrice - Math.max(0, itemDiscount));
-    const taxInCents = Math.round(subtotalInCents * (taxRatePercent / 100));
+    const subtotalInCents = Math.max(0, grossPrice - safeDiscount);
+    const taxInCents = Math.round(subtotalInCents * (safeTaxRatePercent / 100));
     const totalInCents = subtotalInCents + taxInCents;
 
     return { unitPriceInCents, subtotalInCents, taxInCents, totalInCents };
@@ -66,6 +120,12 @@ export const FinancialEngine = {
    * different tax rates keep their own effective tax. When the post item
    * discount subtotal is zero the order discount clamps to zero, the proration
    * ratio stays `0`, and no tax is owed.
+   *
+   * The prorated tax uses the rate **snapshotted on the row** rather than a
+   * ratio back-derived from `taxInCents / subtotalInCents`: on small rows that
+   * ratio magnifies the row's own rounding, so an order discount could shift
+   * tax by a cent that the guest was never quoted. The derived ratio remains
+   * only as a fallback for legacy rows that carry no snapshot.
    */
   calculateOrderSummary(
     items: readonly OrderLineItem[],
@@ -73,28 +133,38 @@ export const FinancialEngine = {
     tipInCents: Cents = 0,
     payments: readonly PaymentRecord[] = [],
   ): OrderSummary {
-    const itemsCount = items.reduce((acc, item) => acc + item.quantity, 0);
+    const safeOrderDiscount = Math.max(0, finiteOr(orderDiscountInCents, 0));
+    const safeTip = Math.max(0, finiteOr(tipInCents, 0));
+
+    const itemsCount = items.reduce((acc, item) => acc + resolveQuantity(item), 0);
     const rawSubtotalInCents = items.reduce(
-      (acc, item) => acc + item.unitPriceInCents * item.quantity,
+      (acc, item) => acc + finiteOr(item.unitPriceInCents, 0) * resolveQuantity(item),
       0,
     );
-    const itemDiscountsInCents = items.reduce((acc, item) => acc + item.discountInCents, 0);
+    const itemDiscountsInCents = items.reduce(
+      (acc, item) => acc + Math.max(0, finiteOr(item.discountInCents, 0)),
+      0,
+    );
 
     const subtotalAfterItemDiscounts = Math.max(0, rawSubtotalInCents - itemDiscountsInCents);
-    const effectiveOrderDiscount = Math.min(subtotalAfterItemDiscounts, orderDiscountInCents);
+    const effectiveOrderDiscount = Math.min(subtotalAfterItemDiscounts, safeOrderDiscount);
     const taxableAmountInCents = subtotalAfterItemDiscounts - effectiveOrderDiscount;
 
     const discountRatio =
       subtotalAfterItemDiscounts > 0 ? effectiveOrderDiscount / subtotalAfterItemDiscounts : 0;
 
     const totalTaxInCents = items.reduce((acc, item) => {
-      const proratedItemSubtotal = item.subtotalInCents * (1 - discountRatio);
-      const taxRate = item.subtotalInCents > 0 ? item.taxInCents / item.subtotalInCents : 0;
+      const itemSubtotalInCents = finiteOr(item.subtotalInCents, 0);
+      const proratedItemSubtotal = itemSubtotalInCents * (1 - discountRatio);
+      const taxRate = resolveTaxRate(item);
       return acc + Math.round(proratedItemSubtotal * taxRate);
     }, 0);
 
-    const finalPayableInCents = taxableAmountInCents + totalTaxInCents + Math.max(0, tipInCents);
-    const totalPaidInCents = payments.reduce((acc, p) => acc + p.amountInCents, 0);
+    const finalPayableInCents = taxableAmountInCents + totalTaxInCents + safeTip;
+    const totalPaidInCents = payments.reduce(
+      (acc, p) => acc + Math.max(0, finiteOr(p.amountInCents, 0)),
+      0,
+    );
     const remainingBalanceInCents = Math.max(0, finalPayableInCents - totalPaidInCents);
 
     return {
@@ -104,7 +174,7 @@ export const FinancialEngine = {
       orderDiscountInCents: effectiveOrderDiscount,
       taxableAmountInCents,
       totalTaxInCents,
-      tipInCents: Math.max(0, tipInCents),
+      tipInCents: safeTip,
       finalPayableInCents,
       totalPaidInCents,
       remainingBalanceInCents,
@@ -116,9 +186,13 @@ export const FinancialEngine = {
    *
    * The candidate set is deduplicated and sorted ascending so the 2x2 grid
    * always presents the exact amount first and progressively larger round-ups.
+   * Round balances (`$20.00`, `$50.00`, `$100.00`) collapse most of the raw
+   * candidates onto the exact amount, which would leave the grid short of its
+   * four-button contract, so the ladder is topped up with the next round-up
+   * above the current maximum until exactly four distinct tenders exist.
    */
   computeQuickCashOptions(payableInCents: Cents): readonly Cents[] {
-    if (payableInCents <= 0) return [0];
+    if (!Number.isFinite(payableInCents) || payableInCents <= 0) return [0];
 
     const payableDollars = payableInCents / 100;
     const exact = payableInCents;
@@ -129,9 +203,22 @@ export const FinancialEngine = {
     const nextHundred = Math.ceil(payableDollars / 100) * 100 * 100;
 
     const rawTenders = [exact, nextFive, nextTen, nextTwenty, nextFifty, nextHundred];
-    const uniqueTenders = Array.from(new Set(rawTenders)).filter((amount) => amount >= payableInCents);
+    const uniqueTenders = Array.from(new Set(rawTenders))
+      .filter((amount) => amount >= payableInCents)
+      .sort((a, b) => a - b);
 
-    return uniqueTenders.sort((a, b) => a - b).slice(0, 4);
+    while (uniqueTenders.length < 4) {
+      const currentMax = uniqueTenders[uniqueTenders.length - 1];
+      // `ceil((currentMax + 1) / step) * step` is always strictly greater than
+      // `currentMax`, so the ladder advances by at least one cent per round.
+      const nextTender = QUICK_CASH_STEPS_IN_CENTS.reduce(
+        (smallest, step) => Math.min(smallest, Math.ceil((currentMax + 1) / step) * step),
+        Number.POSITIVE_INFINITY,
+      );
+      uniqueTenders.push(nextTender);
+    }
+
+    return uniqueTenders.slice(0, 4);
   },
 
   /**
@@ -236,8 +323,10 @@ export function formatCentsDelta(cents: Cents): string {
 /**
  * Parses a user typed money string into integer cents.
  *
- * Accepts `12`, `12.5`, `12.50`, `$12.50`, tolerates repeated decimal points by
- * truncating at the first separator, and returns `0` for unusable input.
+ * Accepts `12`, `12.5`, `12.50`, `$12.50`. Repeated decimal points are collapsed
+ * inside the fractional part before truncation, so `12.3.4` reads as `$12.34`
+ * instead of silently dropping the typed digit; only the first two fractional
+ * digits are significant and returns `0` for unusable input.
  */
 export function parseMoneyInputToCents(rawInput: string): Cents {
   const sanitized = rawInput.replace(/[^0-9.]/g, '');
@@ -249,7 +338,8 @@ export function parseMoneyInputToCents(rawInput: string): Cents {
   }
 
   const wholePart = sanitized.slice(0, firstDotIndex) || '0';
-  const fractionPart = sanitized.slice(firstDotIndex + 1).slice(0, 2).padEnd(2, '0');
+  const rawFraction = sanitized.slice(firstDotIndex + 1).replace(/\./g, '');
+  const fractionPart = rawFraction.slice(0, 2).padEnd(2, '0');
   const whole = Number.parseInt(wholePart, 10);
   const fraction = Number.parseInt(fractionPart, 10);
 

@@ -175,10 +175,14 @@ export async function saveOrderWithOptimisticLock(
       if (tableUpdate) {
         const table = await posDb.diningTables.get(tableUpdate.tableId);
         if (table) {
+          // `activeOrderId` is assigned explicitly in both directions. Spreading
+          // the row and omitting the key on release would carry the previous
+          // ticket's id forward, leaving the floor showing a free table that
+          // still points at a settled order.
           await posDb.diningTables.put({
             ...table,
             status: tableUpdate.release ? 'available' : 'occupied',
-            ...(tableUpdate.release ? {} : { activeOrderId: targetOrder.id }),
+            activeOrderId: tableUpdate.release ? undefined : targetOrder.id,
             version: table.version + 1,
           });
         }
@@ -186,7 +190,10 @@ export async function saveOrderWithOptimisticLock(
 
       if (sessionPayment) {
         const session = await posDb.sessions.get(sessionPayment.sessionId);
-        if (session) {
+        // A closed shift is a sealed financial record: a deferred settlement
+        // that lands after the drawer was counted must not retroactively
+        // increment it.
+        if (session && session.closedAt === undefined) {
           await posDb.sessions.put(applySessionPayment(session, sessionPayment));
         }
       }
