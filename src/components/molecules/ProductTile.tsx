@@ -29,7 +29,6 @@ export function ProductTile({ item, onPress, categoryName, className, testId }: 
     <button
       type="button"
       onClick={() => onPress(item)}
-      disabled={isSoldOut}
       aria-disabled={isSoldOut}
       data-testid={testId ?? `product-tile-${item.id}`}
       data-sku={item.sku}

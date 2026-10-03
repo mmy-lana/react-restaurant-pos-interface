@@ -131,6 +131,30 @@ const ICE_LEVEL_GROUP = {
   ],
 };
 
+const SALAD_BASE_GROUP = {
+  id: 'grp-salad-base',
+  name: 'Base',
+  minSelections: 1,
+  maxSelections: 1,
+  options: [
+    { id: 'opt-base-greens', name: 'Mixed Greens', priceDeltaInCents: 0, isDefault: false },
+    { id: 'opt-base-spinach', name: 'Baby Spinach', priceDeltaInCents: 0, isDefault: false },
+    { id: 'opt-base-caesar', name: 'Caesar Bed', priceDeltaInCents: 125, isDefault: false },
+  ],
+};
+
+const SALAD_DRESSING_GROUP = {
+  id: 'grp-salad-dressing',
+  name: 'Dressing',
+  minSelections: 1,
+  maxSelections: 1,
+  options: [
+    { id: 'opt-dressing-vinaigrette', name: 'Balsamic Vinaigrette', priceDeltaInCents: 0, isDefault: false },
+    { id: 'opt-dressing-ranch', name: 'Buttermilk Ranch', priceDeltaInCents: 0, isDefault: false },
+    { id: 'opt-dressing-bleu', name: 'Blue Cheese', priceDeltaInCents: 60, isDefault: false },
+  ],
+};
+
 const DESSERT_TOPPING_GROUP = {
   id: 'grp-dessert-topping',
   name: 'Toppings',
@@ -278,6 +302,17 @@ export const SEED_MENU_ITEMS: readonly MenuItemRecord[] = [
     barcode: '880100000009',
     colorTag: '#84cc16',
     modifierGroups: [SAUCE_GROUP],
+  }),
+  createMenuItem({
+    id: 'menu-garden-salad',
+    sku: 'SID-005',
+    name: 'Build Your Own Salad',
+    categoryId: 'cat-02-sides',
+    priceInCents: 975,
+    preparationMinutes: 6,
+    barcode: '880100000020',
+    colorTag: '#65a30d',
+    modifierGroups: [SALAD_BASE_GROUP, SALAD_DRESSING_GROUP, TOPPINGS_GROUP],
   }),
   createMenuItem({
     id: 'menu-loaded-nachos',

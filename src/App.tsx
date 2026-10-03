@@ -2,6 +2,7 @@ import { AlertTriangle, Database, Loader2, RotateCcw, ShieldCheck } from 'lucide
 import { POSProvider } from '@/context/POSContext';
 import { PrimitivesShowcase } from '@/components/showcase/PrimitivesShowcase';
 import { MoleculesShowcase } from '@/components/showcase/MoleculesShowcase';
+import { OrganismsShowcase } from '@/components/showcase/OrganismsShowcase';
 import { usePOS } from '@/hooks/usePOS';
 import { formatCents } from '@/utils/financial';
 
@@ -21,6 +22,7 @@ function BootConsole(): React.JSX.Element {
       <main
         className="flex h-screen w-screen flex-col items-center justify-center gap-6 bg-zinc-950 px-6 text-zinc-100"
         data-testid="boot-loading"
+        data-app-state="loading"
       >
         <Loader2 className="h-12 w-12 animate-spin text-emerald-500" aria-hidden="true" />
         <div className="text-center">
@@ -36,6 +38,7 @@ function BootConsole(): React.JSX.Element {
       <main
         className="flex h-screen w-screen flex-col items-center justify-center gap-6 bg-zinc-950 px-6 text-zinc-100"
         data-testid="boot-error"
+        data-app-state="error"
       >
         <AlertTriangle className="h-12 w-12 text-rose-500" aria-hidden="true" />
         <div className="max-w-xl text-center">
@@ -137,6 +140,8 @@ export default function App(): React.JSX.Element {
         return <PrimitivesShowcase />;
       case 'molecules':
         return <MoleculesShowcase />;
+      case 'organisms':
+        return <OrganismsShowcase />;
       default:
         return <BootConsole />;
     }

@@ -111,6 +111,7 @@ export type POSAction =
   /* ---- UI orchestration actions ---- */
   | { type: 'SET_ACTIVE_MODAL'; payload: ActiveModal }
   | { type: 'UPDATE_STAGED_DRAFT'; payload: { groupId: UUID; optionId: UUID } }
+  | { type: 'SET_STAGED_DRAFT'; payload: Record<UUID, UUID[]> }
   | { type: 'SET_STAGED_QUANTITY'; payload: number }
   | { type: 'SET_STAGED_NOTE'; payload: string }
   | { type: 'SET_STAGED_LINE_INDEX'; payload: number | null }
@@ -263,6 +264,11 @@ export function posReducer(state: ActivePOSState, action: POSAction): ActivePOSS
       return state;
     }
 
+    case 'SET_STAGED_DRAFT': {
+      state.stagedModifierDraft = action.payload;
+      return state;
+    }
+
     case 'UPDATE_STAGED_DRAFT': {
       const item = state.stagedMenuItem;
       if (!item) return state;
@@ -372,17 +378,38 @@ export function posReducer(state: ActivePOSState, action: POSAction): ActivePOSS
       if (!menuItem.isAvailable) return state;
 
       const order = state.currentOrder;
-      order.lineItems.push(
-        buildOrderLineItem({
-          menuItemId: menuItem.id,
-          name: menuItem.name,
-          basePriceInCents: menuItem.priceInCents,
-          taxRatePercent: menuItem.taxRatePercent,
-          modifiers,
-          quantity,
-          specialInstructions: note,
-        }),
-      );
+      const editedRow =
+        state.stagedLineItemIndex === null
+          ? undefined
+          : order.lineItems[state.stagedLineItemIndex];
+
+      if (editedRow && editedRow.menuItemId === menuItem.id) {
+        // Edit flow: the staged configuration replaces the existing row.
+        Object.assign(
+          editedRow,
+          recomputeLineItem(
+            {
+              ...editedRow,
+              selectedModifiers: modifiers.map((modifier) => ({ ...modifier })),
+              specialInstructions: note,
+            },
+            quantity,
+            editedRow.discountInCents,
+          ),
+        );
+      } else {
+        order.lineItems.push(
+          buildOrderLineItem({
+            menuItemId: menuItem.id,
+            name: menuItem.name,
+            basePriceInCents: menuItem.priceInCents,
+            taxRatePercent: menuItem.taxRatePercent,
+            modifiers,
+            quantity,
+            specialInstructions: note,
+          }),
+        );
+      }
 
       refreshSummary(order);
       state.activeModal = 'none';
@@ -390,6 +417,7 @@ export function posReducer(state: ActivePOSState, action: POSAction): ActivePOSS
       state.stagedModifierDraft = {};
       state.stagedQuantity = 1;
       state.stagedNote = '';
+      state.stagedLineItemIndex = null;
       return state;
     }
 
@@ -460,8 +488,13 @@ export function posReducer(state: ActivePOSState, action: POSAction): ActivePOSS
     }
 
     case 'ASSIGN_TABLE': {
-      state.currentOrder.tableId = action.payload.tableId;
-      state.assignedTableLabel = action.payload.label;
+      if (action.payload.tableId.length === 0) {
+        delete state.currentOrder.tableId;
+        state.assignedTableLabel = null;
+      } else {
+        state.currentOrder.tableId = action.payload.tableId;
+        state.assignedTableLabel = action.payload.label;
+      }
       state.currentOrder.updatedAt = new Date().toISOString();
       return state;
     }
@@ -482,7 +515,6 @@ export function posReducer(state: ActivePOSState, action: POSAction): ActivePOSS
       const order = state.currentOrder;
       order.payments = [...order.payments, structuredClone(action.payload)];
       refreshSummary(order);
-      state.activeModal = 'none';
       state.isNumpadOpen = false;
       state.numpadValue = '';
       return state;
@@ -575,10 +607,14 @@ export interface POSActions {
   readonly setStagedNote: (note: string) => void;
   readonly incrementQuantity: (clientLineItemId: UUID, delta: number) => void;
   readonly removeItem: (clientLineItemId: UUID) => void;
+  readonly editLineItem: (clientLineItemId: UUID) => void;
   readonly applyItemDiscount: (clientLineItemId: UUID, discountInCents: Cents) => void;
   readonly applyOrderDiscount: (discountInCents: Cents) => void;
   readonly setDiningOption: (diningOption: DiningOption) => void;
+  readonly setGuestCount: (guestCount: number) => void;
+  readonly setOrderNote: (note: string) => void;
   readonly assignTable: (tableId: UUID, label: string) => void;
+  readonly clearTable: () => void;
   readonly openPayment: () => void;
   readonly closeModal: () => void;
   readonly setActiveModal: (modal: ActiveModal) => void;
@@ -714,17 +750,17 @@ export function POSProvider({ children }: POSProviderProps) {
     }
   }, [state.nextOrderNumber]);
 
-  const commitCurrentOrder = useCallback(
+  const commitOrder = useCallback(
     async (
-      overrides: Partial<Pick<OrderRecord, 'status' | 'completedAt'>>,
+      snapshot: OrderRecord,
+      overrides: Partial<Pick<OrderRecord, 'status' | 'completedAt' | 'summary' | 'payments'>>,
       tableIntent?: { tableId: UUID; release: boolean },
     ): Promise<boolean> => {
-      const snapshot = structuredClone(state.currentOrder) as OrderRecord;
+      const base = structuredClone(snapshot) as OrderRecord;
       const merged: OrderRecord = {
-        ...snapshot,
+        ...base,
         ...overrides,
-        version: snapshot.version,
-        summary: snapshot.summary,
+        version: base.version,
       };
 
       dispatch({ type: 'SET_MUTATION_STATE', payload: { isMutating: true, error: null } });
@@ -733,7 +769,7 @@ export function POSProvider({ children }: POSProviderProps) {
         await saveOrderWithOptimisticLock(db, merged, tableIntent);
         dispatch({
           type: 'ORDER_COMMITTED',
-          payload: { version: snapshot.version + 1, updatedAt: new Date().toISOString() },
+          payload: { version: base.version + 1, updatedAt: new Date().toISOString() },
         });
         return true;
       } catch (error) {
@@ -741,18 +777,18 @@ export function POSProvider({ children }: POSProviderProps) {
         dispatch({ type: 'SET_MUTATION_STATE', payload: { isMutating: false, error: message } });
         AudioFeedback.playWarning();
 
-        if (error instanceof OptimisticLockError) {
-          const authoritative = await db.orders.get(snapshot.id).catch(() => undefined);
-          if (authoritative) {
-            dispatch({ type: 'REPLACE_ORDER', payload: authoritative });
-          }
+        // The database is the source of truth: reload the authoritative row so a
+        // failed write can never leave the cashier looking at a phantom ticket.
+        const authoritative = await db.orders.get(base.id).catch(() => undefined);
+        if (authoritative) {
+          dispatch({ type: 'REPLACE_ORDER', payload: authoritative });
         }
         return false;
       } finally {
         dispatch({ type: 'SET_MUTATION_STATE', payload: { isMutating: false } });
       }
     },
-    [dispatch, state.currentOrder],
+    [dispatch],
   );
 
   /* ------------------------------------------------------------ actions */
@@ -774,20 +810,51 @@ export function POSProvider({ children }: POSProviderProps) {
       return;
     }
 
+    const parkedSnapshot: OrderRecord = { ...order, status: 'parked' };
     dispatch({ type: 'PARK_ORDER' });
-    const committed = await commitCurrentOrder({ status: 'parked' }, order.tableId ? { tableId: order.tableId, release: true } : undefined);
+
+    const committed = await commitOrder(
+      parkedSnapshot,
+      { status: 'parked' },
+      order.tableId ? { tableId: order.tableId, release: true } : undefined,
+    );
     if (!committed) return;
 
     AudioFeedback.playChime();
     await startNewOrder();
-  }, [commitCurrentOrder, dispatch, startNewOrder, state.currentOrder]);
+  }, [commitOrder, dispatch, startNewOrder, state.currentOrder]);
 
+  /**
+   * Records a tender. Partial tenders stay on the ticket (split payment) while
+   * the tender that zeroes the balance settles it, releases the table and rolls
+   * the register on to a fresh ticket.
+   */
   const settleOrder = useCallback(
     async (payment: PaymentRecord) => {
       const order = state.currentOrder;
-      const completedAt = new Date().toISOString();
+      const payments = [...order.payments, payment];
+      const summary = FinancialEngine.calculateOrderSummary(
+        order.lineItems,
+        order.summary.orderDiscountInCents,
+        order.summary.tipInCents,
+        payments,
+      );
+      const isFullySettled = summary.remainingBalanceInCents === 0;
 
-      const committed = await commitCurrentOrder({ status: 'paid', completedAt }, order.tableId ? { tableId: order.tableId, release: true } : undefined);
+      dispatch({ type: 'PROCESS_PAYMENT', payload: payment });
+
+      const committed = await commitOrder(
+        order,
+        {
+          status: isFullySettled ? 'paid' : 'draft',
+          payments,
+          summary,
+          ...(isFullySettled ? { completedAt: new Date().toISOString() } : {}),
+        },
+        order.tableId
+          ? { tableId: order.tableId, release: isFullySettled }
+          : undefined,
+      );
       if (!committed) return;
 
       if (state.activeSession) {
@@ -798,11 +865,16 @@ export function POSProvider({ children }: POSProviderProps) {
         }
       }
 
-      AudioFeedback.playSuccess();
-      dispatch({ type: 'SET_MUTATION_STATE', payload: { isMutating: false } });
-      await startNewOrder();
+      if (isFullySettled) {
+        dispatch({ type: 'CLOSE_MODAL' });
+        AudioFeedback.playSuccess();
+        await startNewOrder();
+        return;
+      }
+
+      AudioFeedback.playChime();
     },
-    [commitCurrentOrder, dispatch, startNewOrder, state.activeSession, state.currentOrder],
+    [commitOrder, dispatch, startNewOrder, state.activeSession, state.currentOrder],
   );
 
   const commitNumpadValue = useCallback(
@@ -932,6 +1004,44 @@ export function POSProvider({ children }: POSProviderProps) {
         dispatch({ type: 'REMOVE_ITEM', payload: { clientLineItemId } });
         AudioFeedback.playTick();
       },
+      editLineItem: (clientLineItemId) => {
+        const rowIndex = state.currentOrder.lineItems.findIndex(
+          (row) => row.clientLineItemId === clientLineItemId,
+        );
+        if (rowIndex < 0) {
+          AudioFeedback.playWarning();
+          return;
+        }
+
+        const row = state.currentOrder.lineItems[rowIndex];
+        const menuItem = catalog.menuItems.find((item) => item.id === row.menuItemId);
+        if (!menuItem) {
+          AudioFeedback.playWarning();
+          dispatch({
+            type: 'SET_MUTATION_STATE',
+            payload: { isMutating: false, error: 'That catalog item is no longer available.' },
+          });
+          return;
+        }
+
+        const draftFromRow: Record<UUID, UUID[]> = {};
+        for (const group of menuItem.modifierGroups) draftFromRow[group.id] = [];
+        for (const modifier of row.selectedModifiers) {
+          if (draftFromRow[modifier.modifierGroupId]) {
+            draftFromRow[modifier.modifierGroupId] = [
+              ...draftFromRow[modifier.modifierGroupId],
+              modifier.optionId,
+            ];
+          }
+        }
+
+        dispatch({ type: 'OPEN_MODIFIER_MODAL', payload: menuItem });
+        dispatch({ type: 'SET_STAGED_DRAFT', payload: draftFromRow });
+        dispatch({ type: 'SET_STAGED_QUANTITY', payload: row.quantity });
+        dispatch({ type: 'SET_STAGED_NOTE', payload: row.specialInstructions });
+        dispatch({ type: 'SET_STAGED_LINE_INDEX', payload: rowIndex });
+        AudioFeedback.triggerBeep(700, 0.04, 'triangle');
+      },
       applyItemDiscount: (clientLineItemId, discountInCents) =>
         dispatch({ type: 'APPLY_ITEM_DISCOUNT', payload: { clientLineItemId, discountInCents } }),
       applyOrderDiscount: (discountInCents) => {
@@ -942,9 +1052,18 @@ export function POSProvider({ children }: POSProviderProps) {
         dispatch({ type: 'SET_DINING_OPTION', payload: diningOption });
         AudioFeedback.playTick();
       },
+      setGuestCount: (guestCount) => {
+        dispatch({ type: 'SET_GUEST_COUNT', payload: guestCount });
+        AudioFeedback.playTick();
+      },
+      setOrderNote: (note) => dispatch({ type: 'SET_ORDER_NOTE', payload: note }),
       assignTable: (tableId, label) => {
         dispatch({ type: 'ASSIGN_TABLE', payload: { tableId, label } });
         AudioFeedback.triggerBeep(760, 0.05, 'triangle');
+      },
+      clearTable: () => {
+        dispatch({ type: 'ASSIGN_TABLE', payload: { tableId: '', label: '' } });
+        AudioFeedback.playTick();
       },
       openPayment: () => {
         if (state.currentOrder.lineItems.length === 0) {
@@ -981,6 +1100,7 @@ export function POSProvider({ children }: POSProviderProps) {
       findMenuItemByBarcode,
     }),
     [
+      catalog.menuItems,
       commitNumpadValue,
       dispatch,
       findMenuItemByBarcode,

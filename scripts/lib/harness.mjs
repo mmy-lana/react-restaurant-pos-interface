@@ -160,6 +160,11 @@ export async function withPreviewServer(body, port = 4319) {
   }
 }
 
+/** Blocks until the register finished its boot/seed sequence. */
+export async function waitForBoot(page, timeout = 20_000) {
+  await page.waitForSelector('[data-app-state="ready"], [data-app-state="error"]', { timeout });
+}
+
 /** Opens an isolated page sized for the given viewport. */
 export async function openRegisterPage(browser, baseUrl, viewport = { width: 1366, height: 1024 }) {
   const context = await browser.newContext({

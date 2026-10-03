@@ -21,7 +21,7 @@ async function run({ browser, baseUrl }) {
 
   runner.checkMatch('order number matches POS-YYYYMMDD-XXXX', dataset.orderNumber, /^POS-\d{8}-\d{4}$/);
   runner.checkEqual('seeded categories', dataset.categoryCount, '5');
-  runner.checkEqual('seeded menu items', dataset.menuCount, '19');
+  runner.checkEqual('seeded menu items', dataset.menuCount, '20');
   runner.checkEqual('seeded floor tables', dataset.tableCount, '14');
 
   const bootText = await page.locator('[data-testid="boot-ready"]').innerText();
@@ -56,7 +56,7 @@ async function run({ browser, baseUrl }) {
     return counts;
   });
 
-  runner.checkEqual('IndexedDB menuItems rows', indexedDbState.menuItems, 19);
+  runner.checkEqual('IndexedDB menuItems rows', indexedDbState.menuItems, 20);
   runner.checkEqual('IndexedDB categories rows', indexedDbState.categories, 5);
   runner.checkEqual('IndexedDB tables rows', indexedDbState.tables, 14);
   runner.checkEqual('IndexedDB cashier session rows', indexedDbState.sessions, 1);

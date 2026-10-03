@@ -81,9 +81,9 @@ async function run({ browser, baseUrl }) {
     await soldOutTile.isVisible(),
   );
   runner.checkEqual(
-    'sold-out tile is disabled for tapping',
-    await soldOutTile.evaluate((node) => node.disabled),
-    true,
+    'sold-out tile is marked aria-disabled yet stays focusable',
+    await soldOutTile.getAttribute('aria-disabled'),
+    'true',
   );
   runner.check(
     'sold-out tile carries an 86\'d badge',
