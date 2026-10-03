@@ -1,5 +1,5 @@
 import { X } from 'lucide-react';
-import { useCallback, useEffect, useId, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { cn } from '@/utils/cn';
 import { AudioFeedback } from '@/utils/audioFeedback';
 
@@ -57,6 +57,9 @@ export function ModalShell({
 }: ModalShellProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+  // A dismissal triggered by Enter/Escape also releases the key as a click on
+  // whatever sits underneath. Suppress that ghost click for a moment.
+  const ghostClickGuardUntilRef = useRef(0);
   const titleId = useId();
   const subtitleId = useId();
 
@@ -68,6 +71,39 @@ export function ModalShell({
     AudioFeedback.playTick();
     onClose();
   }, [onClose, preventClose]);
+
+  // Every close path (backdrop, Escape, close button, external state change)
+  // arms the guard in the same commit, before the browser can synthesise the
+  // follow-up click on whatever now sits behind the dismissed overlay.
+  const wasOpenRef = useRef(isOpen);
+  useLayoutEffect(() => {
+    if (wasOpenRef.current && !isOpen) {
+      ghostClickGuardUntilRef.current = performance.now() + 350;
+    }
+    wasOpenRef.current = isOpen;
+  }, [isOpen]);
+
+  // Mounted for the component's lifetime (not just while open) because the
+  // ghost click lands in the window between the close and the reopen attempt.
+  useEffect(() => {
+    const blockGhostClick = (event: MouseEvent): void => {
+      if (performance.now() > ghostClickGuardUntilRef.current) return;
+      // Only keyboard-synthesised activations produce a ghost click:
+      // `detail === 0`. A real finger tap always reports `detail >= 1` and is
+      // never swallowed, so the cashier's next tap lands immediately.
+      if (event.detail !== 0) return;
+
+      const panel = panelRef.current;
+      const target = event.target as Node | null;
+      if (panel && target && !panel.contains(target)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+
+    document.addEventListener('click', blockGhostClick, true);
+    return () => document.removeEventListener('click', blockGhostClick, true);
+  }, []);
 
   useEffect(() => {
     if (!isOpen) return undefined;

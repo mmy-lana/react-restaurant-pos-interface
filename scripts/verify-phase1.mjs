@@ -10,6 +10,9 @@ async function run({ browser, baseUrl }) {
 
   banner('Phase 1 · boot, seed and persistence core');
 
+  // The boot console stays reachable as a reference screen once the register
+  // shell is mounted.
+  await page.goto(`${baseUrl}/?showcase=boot`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-testid="boot-ready"]', { timeout: 20_000 });
 
   const dataset = await page.locator('[data-testid="boot-ready"]').evaluate((node) => ({

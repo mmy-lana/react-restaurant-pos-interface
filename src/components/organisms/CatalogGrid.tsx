@@ -14,6 +14,7 @@ export interface CatalogGridProps {
   readonly onSelectCategory: (categoryId: UUID | 'all') => void;
   readonly onSearchChange: (query: string) => void;
   readonly onOpenItem: (item: MenuItemRecord) => void;
+  readonly onCustomizeItem?: (item: MenuItemRecord) => void;
   readonly isLoading?: boolean;
   /** Fired by the empty-state CTA to reset both filters at once. */
   readonly onResetFilters?: () => void;
@@ -32,6 +33,7 @@ export function CatalogGrid({
   onSelectCategory,
   onSearchChange,
   onOpenItem,
+  onCustomizeItem,
   isLoading = false,
   onResetFilters,
 }: CatalogGridProps) {
@@ -125,6 +127,7 @@ export function CatalogGrid({
                 item={item}
                 categoryName={categoryNameById[item.categoryId]}
                 onPress={onOpenItem}
+                onCustomize={onCustomizeItem}
               />
             ))}
           </div>

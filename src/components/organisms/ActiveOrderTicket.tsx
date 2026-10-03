@@ -26,6 +26,7 @@ export interface ActiveOrderTicketProps {
   readonly onIncrementQuantity: (clientLineItemId: UUID, delta: number) => void;
   readonly onRemoveItem: (clientLineItemId: UUID) => void;
   readonly onApplyItemDiscount: (clientLineItemId: UUID, discountInCents: Cents) => void;
+  readonly onEditLineItem: (clientLineItemId: UUID) => void;
   readonly onSetDiningOption: (diningOption: DiningOption) => void;
   readonly onSetGuestCount: (guestCount: number) => void;
   readonly onOpenTablePicker: () => void;
@@ -94,6 +95,7 @@ export function ActiveOrderTicket({
   onIncrementQuantity,
   onRemoveItem,
   onApplyItemDiscount,
+  onEditLineItem,
   onSetDiningOption,
   onSetGuestCount,
   onOpenTablePicker,
@@ -205,6 +207,7 @@ export function ActiveOrderTicket({
                   position={index + 1}
                   onIncrement={onIncrementQuantity}
                   onRemove={onRemoveItem}
+                  onEdit={onEditLineItem}
                   onDiscount={(clientLineItemId) => onApplyItemDiscount(clientLineItemId, 100)}
                   compact
                 />

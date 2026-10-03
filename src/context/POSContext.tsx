@@ -33,6 +33,7 @@ import {
   createInitialModifierDraft,
   resolveModifiersFromDraft,
   toggleModifierOption,
+  validateModifierDraft,
 } from '@/utils/modifiers';
 import {
   buildOrderLineItem,
@@ -183,12 +184,22 @@ function refreshSummary(order: OrderRecord): void {
   order.updatedAt = new Date().toISOString();
 }
 
-function isBareRow(row: OrderRecord['lineItems'][number]): boolean {
-  return (
-    row.selectedModifiers.length === 0 &&
-    row.discountInCents === 0 &&
-    row.specialInstructions.trim().length === 0
-  );
+/**
+ * Identity of a ticket row for merge purposes: same item, same modifiers,
+ * same note and same discount. Two burgers with different builds must never
+ * collapse into a single line.
+ */
+function rowSignature(row: OrderRecord['lineItems'][number]): string {
+  const modifiers = row.selectedModifiers
+    .map((modifier) => modifier.optionId)
+    .sort()
+    .join(',');
+  return [
+    row.menuItemId,
+    row.specialInstructions.trim().toLowerCase(),
+    row.discountInCents,
+    modifiers,
+  ].join('|');
 }
 
 export function posReducer(state: ActivePOSState, action: POSAction): ActivePOSState {
@@ -349,9 +360,21 @@ export function posReducer(state: ActivePOSState, action: POSAction): ActivePOSS
       if (!menuItem.isAvailable) return state;
 
       const order = state.currentOrder;
-      const existingRow = order.lineItems.find(
-        (row) => row.menuItemId === menuItem.id && isBareRow(row),
+      const defaultModifiers = resolveModifiersFromDraft(
+        menuItem,
+        createInitialModifierDraft(menuItem),
       );
+
+      const candidate = buildOrderLineItem({
+        menuItemId: menuItem.id,
+        name: menuItem.name,
+        basePriceInCents: menuItem.priceInCents,
+        taxRatePercent: menuItem.taxRatePercent,
+        modifiers: defaultModifiers,
+      });
+
+      const signature = rowSignature(candidate);
+      const existingRow = order.lineItems.find((row) => rowSignature(row) === signature);
 
       if (existingRow) {
         Object.assign(
@@ -359,14 +382,7 @@ export function posReducer(state: ActivePOSState, action: POSAction): ActivePOSS
           recomputeLineItem(existingRow, existingRow.quantity + 1, existingRow.discountInCents),
         );
       } else {
-        order.lineItems.push(
-          buildOrderLineItem({
-            menuItemId: menuItem.id,
-            name: menuItem.name,
-            basePriceInCents: menuItem.priceInCents,
-            taxRatePercent: menuItem.taxRatePercent,
-          }),
-        );
+        order.lineItems.push(candidate);
       }
 
       refreshSummary(order);
@@ -601,6 +617,8 @@ export interface POSActions {
   readonly setSearchQuery: (query: string) => void;
   readonly openItem: (menuItem: MenuItem) => void;
   readonly addItemDirect: (menuItem: MenuItem) => void;
+  /** Always opens the modifier overlay, even when defaults would be valid. */
+  readonly customizeItem: (menuItem: MenuItem) => void;
   readonly submitStagedItem: () => void;
   readonly toggleStagedModifier: (groupId: UUID, optionId: UUID) => void;
   readonly setStagedQuantity: (quantity: number) => void;
@@ -620,6 +638,9 @@ export interface POSActions {
   readonly setActiveModal: (modal: ActiveModal) => void;
   readonly openNumpad: (mode: NumpadMode, targetClientLineItemId?: UUID | null) => void;
   readonly closeNumpad: () => void;
+  readonly numpadAppendKey: (digit: string) => void;
+  readonly numpadBackspace: () => void;
+  readonly numpadClear: () => void;
   readonly commitNumpadValue: (rawValue: string) => void;
   readonly parkCurrentOrder: () => Promise<void>;
   readonly settleOrder: (payment: PaymentRecord) => Promise<void>;
@@ -970,7 +991,9 @@ export function POSProvider({ children }: POSProviderProps) {
           return;
         }
 
-        if (menuItem.modifierGroups.length > 0) {
+        const draft = createInitialModifierDraft(menuItem);
+        if (!validateModifierDraft(menuItem, draft).isValid) {
+          // A mandatory group without a default cannot be rung blind.
           dispatch({ type: 'OPEN_MODIFIER_MODAL', payload: menuItem });
           return;
         }
@@ -978,6 +1001,14 @@ export function POSProvider({ children }: POSProviderProps) {
         dispatch({ type: 'ADD_ITEM_DIRECT', payload: menuItem });
       },
       addItemDirect: (menuItem) => dispatch({ type: 'ADD_ITEM_DIRECT', payload: menuItem }),
+      customizeItem: (menuItem) => {
+        if (!menuItem.isAvailable) {
+          AudioFeedback.playWarning();
+          return;
+        }
+        dispatch({ type: 'OPEN_MODIFIER_MODAL', payload: menuItem });
+        AudioFeedback.triggerBeep(700, 0.04, 'triangle');
+      },
       submitStagedItem: () => {
         const item = state.stagedMenuItem;
         if (!item) return;
@@ -1085,6 +1116,15 @@ export function POSProvider({ children }: POSProviderProps) {
       openNumpad: (mode, targetClientLineItemId) =>
         dispatch({ type: 'OPEN_NUM_PAD', payload: { mode, targetClientLineItemId } }),
       closeNumpad: () => dispatch({ type: 'CLOSE_NUM_PAD' }),
+      numpadAppendKey: (digit) => {
+        dispatch({ type: 'APPEND_NUM_PAD_KEY', payload: digit });
+        AudioFeedback.vibrate(8);
+      },
+      numpadBackspace: () => {
+        dispatch({ type: 'BACKSPACE_NUM_PAD' });
+        AudioFeedback.vibrate(8);
+      },
+      numpadClear: () => dispatch({ type: 'SET_NUM_PAD_VALUE', payload: '' }),
       commitNumpadValue,
       parkCurrentOrder: () => parkCurrentOrder(),
       settleOrder: (payment) => settleOrder(payment),

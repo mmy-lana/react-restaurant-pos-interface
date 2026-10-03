@@ -1,4 +1,4 @@
-import { Layers, TriangleAlert } from 'lucide-react';
+import { Layers, SlidersHorizontal, TriangleAlert } from 'lucide-react';
 import type { MenuItemRecord } from '@/types/pos';
 import { Badge, PreparationTimer } from '@/components/primitives/Badge';
 import { PriceDisplay } from '@/components/primitives/PriceDisplay';
@@ -7,7 +7,10 @@ import { requiresModifierSelection } from '@/utils/modifiers';
 
 export interface ProductTileProps {
   readonly item: MenuItemRecord;
+  /** Rings the item with its default configuration (fast path). */
   readonly onPress: (item: MenuItemRecord) => void;
+  /** Opens the modifier overlay for the item. */
+  readonly onCustomize?: (item: MenuItemRecord) => void;
   /** Secondary caption, normally the category name. */
   readonly categoryName?: string;
   readonly className?: string;
@@ -21,9 +24,17 @@ export interface ProductTileProps {
  * through, labelled "86'd" and refuse to fire, so the state is still obvious
  * under glare or for a colour-blind cashier.
  */
-export function ProductTile({ item, onPress, categoryName, className, testId }: ProductTileProps) {
+export function ProductTile({
+  item,
+  onPress,
+  onCustomize,
+  categoryName,
+  className,
+  testId,
+}: ProductTileProps) {
   const isSoldOut = !item.isAvailable;
-  const hasModifiers = requiresModifierSelection(item);
+  const hasModifiers = item.modifierGroups.length > 0;
+  const requiresChoice = requiresModifierSelection(item);
 
   return (
     <button
@@ -75,8 +86,8 @@ export function ProductTile({ item, onPress, categoryName, className, testId }: 
           </span>
           {hasModifiers && !isSoldOut && (
             <Badge
-              label="Options"
-              tone="info"
+              label={requiresChoice ? 'Required options' : 'Options'}
+              tone={requiresChoice ? 'info' : 'muted'}
               icon={<Layers className="h-3 w-3" aria-hidden="true" />}
               testId="tile-modifier-badge"
             />
@@ -85,6 +96,22 @@ export function ProductTile({ item, onPress, categoryName, className, testId }: 
 
         <PriceDisplay amountInCents={item.priceInCents} size="lg" tone={isSoldOut ? 'muted' : 'primary'} />
       </span>
+
+      {hasModifiers && !isSoldOut && onCustomize && (
+        <button
+          type="button"
+          onClick={(event) => {
+            // Nested controls: keep the tap from also ringing the item.
+            event.stopPropagation();
+            onCustomize(item);
+          }}
+          aria-label={`Customize ${item.name}`}
+          data-testid={`product-customize-${item.id}`}
+          className="absolute bottom-2 right-2 flex h-11 w-11 items-center justify-center rounded-lg border border-line bg-canvas/90 text-ink-muted transition-transform duration-75 active:scale-95 active:text-ink"
+        >
+          <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
+        </button>
+      )}
 
       {isSoldOut && (
         <span className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 bg-canvas/70 font-mono text-xs uppercase tracking-widest text-danger">

@@ -79,6 +79,7 @@ export function OrganismsShowcase(): React.JSX.Element {
           onSelectCategory={actions.selectCategory}
           onSearchChange={actions.setSearchQuery}
           onOpenItem={actions.openItem}
+      onCustomizeItem={actions.customizeItem}
           isLoading={catalog.isCatalogLoading}
           onResetFilters={() => {
             actions.setSearchQuery('');
@@ -98,6 +99,7 @@ export function OrganismsShowcase(): React.JSX.Element {
           onIncrementQuantity={actions.incrementQuantity}
           onRemoveItem={actions.removeItem}
           onApplyItemDiscount={actions.applyItemDiscount}
+          onEditLineItem={actions.editLineItem}
           onSetDiningOption={actions.setDiningOption}
           onSetGuestCount={actions.setGuestCount}
           onOpenTablePicker={() => setTableDrawerOpen(true)}

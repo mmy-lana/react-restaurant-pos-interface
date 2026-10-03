@@ -46,13 +46,29 @@ export function TableManagementDrawer({
   onClose,
 }: TableManagementDrawerProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const ghostClickGuardUntilRef = useRef(0);
 
   useEffect(() => {
-    if (!isOpen) return undefined;
+    const blockGhostClick = (event: MouseEvent): void => {
+      if (performance.now() > ghostClickGuardUntilRef.current) return;
+      // Only keyboard-synthesised activations produce a ghost click:
+      // `detail === 0`. A real finger tap always reports `detail >= 1` and is
+      // never swallowed, so the cashier's next tap lands immediately.
+      if (event.detail !== 0) return;
+      const panel = panelRef.current;
+      const target = event.target as Node | null;
+      if (panel && target && !panel.contains(target)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
 
     const handleKeyDown = (event: KeyboardEvent): void => {
+      if (!isOpen) return;
+
       if (event.key === 'Escape') {
         event.preventDefault();
+        ghostClickGuardUntilRef.current = performance.now() + 350;
         onClose();
         return;
       }
@@ -76,7 +92,11 @@ export function TableManagementDrawer({
     };
 
     document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
+    document.addEventListener('click', blockGhostClick, true);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('click', blockGhostClick, true);
+    };
   }, [isOpen, onClose]);
 
   if (!isOpen) return null;
@@ -110,6 +130,7 @@ export function TableManagementDrawer({
           <button
             type="button"
             onClick={() => {
+              ghostClickGuardUntilRef.current = performance.now() + 350;
               AudioFeedback.playTick();
               onClose();
             }}

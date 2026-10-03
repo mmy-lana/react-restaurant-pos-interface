@@ -100,7 +100,23 @@ async function run({ browser, baseUrl }) {
   await page.locator('[data-testid="modifier-cancel"]').tap();
   await page.waitForSelector('[data-testid="modifier-modal"]', { state: 'detached' });
   await page.locator('[data-testid="catalog-search-input"]').fill('');
+  // Items whose defaults already satisfy every group ring on a single tap, so
+  // the modifier overlay is reached through the tile's customize affordance.
   await page.locator('[data-testid="product-tile-menu-smash-classic"]').tap();
+  runner.checkEqual(
+    'a tap rings a fully defaulted item without a detour',
+    await page.locator('[data-testid="modifier-modal"]').count(),
+    0,
+  );
+  // Drop the quick-ring row so the rest of the flow asserts a single line item.
+  await page.locator('[data-testid^="ticket-line-remove-"]').last().tap();
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="active-ticket"]').getAttribute('data-item-count') === '0',
+    null,
+    { timeout: 10_000 },
+  );
+
+  await page.locator('[data-testid="product-customize-menu-smash-classic"]').tap();
   await page.waitForSelector('[data-testid="modifier-modal"]');
   runner.checkEqual(
     'defaults satisfy mandatory groups immediately',

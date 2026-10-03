@@ -3,6 +3,7 @@ import { POSProvider } from '@/context/POSContext';
 import { PrimitivesShowcase } from '@/components/showcase/PrimitivesShowcase';
 import { MoleculesShowcase } from '@/components/showcase/MoleculesShowcase';
 import { OrganismsShowcase } from '@/components/showcase/OrganismsShowcase';
+import { POSLayoutShell } from '@/components/templates/POSLayoutShell';
 import { usePOS } from '@/hooks/usePOS';
 import { formatCents } from '@/utils/financial';
 
@@ -142,8 +143,10 @@ export default function App(): React.JSX.Element {
         return <MoleculesShowcase />;
       case 'organisms':
         return <OrganismsShowcase />;
-      default:
+      case 'boot':
         return <BootConsole />;
+      default:
+        return <POSLayoutShell />;
     }
   })();
 
