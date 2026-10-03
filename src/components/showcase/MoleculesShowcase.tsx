@@ -96,6 +96,7 @@ export function MoleculesShowcase(): React.JSX.Element {
               item={item}
               categoryName={categoryNameFor(item.categoryId)}
               onPress={actions.openItem}
+              onCustomize={actions.customizeItem}
             />
           ))}
         </div>

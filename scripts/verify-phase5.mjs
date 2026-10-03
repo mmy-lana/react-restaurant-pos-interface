@@ -227,6 +227,92 @@ async function run({ browser, baseUrl }) {
     '-250',
   );
 
+  /* --------------------------------------------- STATE-01 line discount */
+  banner('STATE-01 · line discount numpad');
+
+  // Ring a row with enough value to absorb the discount without clamping.
+  await page.locator('[data-testid="product-tile-menu-onion-rings"]').tap();
+  await page.waitForFunction(
+    () => Number(document.querySelector('[data-testid="active-ticket"]').getAttribute('data-item-count')) === 2,
+    null,
+    { timeout: 10_000 },
+  );
+
+  await page.locator('[data-testid^="ticket-line-discount-action-"]').last().tap();
+  await page.waitForSelector('[data-testid="numpad-modal"]');
+
+  runner.checkEqual(
+    'row discount opens the numpad instead of a hardcoded amount',
+    (await page.locator('[data-testid="numpad-modal"] h2').innerText()).trim().toUpperCase(),
+    'LINE DISCOUNT',
+  );
+  runner.check(
+    'the numpad targets the selected row',
+    (await page.locator('[data-testid="numpad-modal"]').getAttribute('data-testid')) === 'numpad-modal',
+  );
+
+  for (const key of ['1']) {
+    await page.locator(`[data-testid="numpad-key-${key}"]`).tap();
+  }
+  runner.checkEqual(
+    'the numpad stages the cashier-entered amount',
+    (await page.locator('[data-testid="numpad-modal-display"]').innerText()).trim(),
+    '$1',
+  );
+
+  await page.locator('[data-testid="numpad-apply"]').tap();
+  await page.waitForSelector('[data-testid="numpad-modal"]', { state: 'detached' });
+  await page.waitForTimeout(200);
+
+  const appliedLineDiscount = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('[data-testid^="ticket-line-discount-"]'))
+      .filter((node) => !node.getAttribute('data-testid').endsWith('-action-'))
+      .map((node) => node.textContent?.trim() ?? ''),
+  );
+  runner.check(
+    'the cashier-entered line discount lands on the row',
+    appliedLineDiscount.some((label) => label.toUpperCase().includes('1.00')),
+    JSON.stringify(appliedLineDiscount),
+  );
+
+  /* ----------------------------------------------------- DATA-03 unseating */
+  banner('DATA-03 · un-seating releases the table in IndexedDB');
+
+  await page.locator('[data-testid="ticket-table-button"]').tap();
+  await page.waitForSelector('[data-testid="table-drawer"]');
+  await page.locator('[data-testid="table-drawer-clear"]').tap();
+  await page.waitForSelector('[data-testid="table-drawer"]', { state: 'detached' });
+  await page.waitForTimeout(400);
+
+  const unseated = await page.evaluate(async () => {
+    const request = indexedDB.open('RestaurantPOS_DB');
+    const database = await new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const tables = await new Promise((resolve, reject) => {
+      const tx = database.transaction('tables', 'readonly');
+      const req = tx.objectStore('tables').getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    database.close();
+    const table = tables.find((row) => row.label === 'T02');
+    return {
+      status: table?.status,
+      hasActiveOrder: table?.activeOrderId !== undefined && table.activeOrderId !== null,
+      headerTable: document.querySelector('[data-testid="ticket-table-button"]')?.textContent?.trim(),
+    };
+  });
+
+  runner.checkEqual('un-seating frees the table in IndexedDB', unseated.status, 'available');
+  runner.checkEqual('un-seating clears the persisted activeOrderId', unseated.hasActiveOrder, false);
+  runner.check(
+    'the ticket no longer references the table',
+    (unseated.headerTable ?? '').toLowerCase().includes('assign table'),
+    unseated.headerTable,
+  );
+
   /* ---------------------------------------------------------- stress test */
   banner('Stress: 50+ item order, rapid taps');
 
@@ -257,17 +343,17 @@ async function run({ browser, baseUrl }) {
   runner.checkEqual(
     '60 rapid taps merge into one row per configuration',
     stressState.rowCount,
-    3,
+    4,
   );
   runner.checkEqual(
     'quantities survive rapid tapping',
     stressState.quantities.reduce((sum, value) => sum + value, 0),
-    61,
+    62,
   );
   runner.checkEqual(
     'subtotal matches the expected arithmetic',
     stressState.subtotal,
-    30 * 590 + 30 * 650 + 300,
+    30 * 590 + 30 * 650 + 300 + 550,
   );
 
   /* ------------------------------------------------------- history + park */
@@ -299,7 +385,7 @@ async function run({ browser, baseUrl }) {
     await page.evaluate(() =>
       Number(document.querySelector('[data-testid="active-ticket"]').getAttribute('data-item-count')),
     ),
-    3,
+    4,
   );
   runner.checkEqual(
     'restored ticket keeps its order number',
@@ -376,7 +462,7 @@ async function run({ browser, baseUrl }) {
   );
   runner.check(
     'the register reloads the authoritative row after a conflict',
-    Number(await page.locator('[data-testid="active-ticket"]').getAttribute('data-item-count')) === 3,
+    Number(await page.locator('[data-testid="active-ticket"]').getAttribute('data-item-count')) === 4,
     await page.locator('[data-testid="active-ticket"]').getAttribute('data-item-count'),
   );
 
@@ -399,6 +485,27 @@ async function run({ browser, baseUrl }) {
     await page.locator(`[data-testid="numpad-key-${key}"]`).tap();
   }
 
+  // CONC-02: a scan must not ring stock while the checkout overlay is open.
+  const rowsBeforeScan = await page.locator('[data-menu-item-id]').count();
+  await page.keyboard.type('880100000012', { delay: 5 });
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(400);
+  runner.checkEqual(
+    'scanning behind an open overlay rings nothing',
+    await page.locator('[data-menu-item-id]').count(),
+    rowsBeforeScan,
+  );
+  runner.checkEqual(
+    'blocked scans surface no scan toast',
+    await page.locator('[data-testid="scan-toast"]').count(),
+    0,
+  );
+  runner.checkEqual(
+    'blocked scans leave the checkout overlay intact',
+    await page.locator('[data-testid="payment-modal"]').count(),
+    1,
+  );
+
   const applied = Number(
     await page.locator('[data-testid="payment-applied"]').getAttribute('data-amount-cents'),
   );
@@ -420,6 +527,73 @@ async function run({ browser, baseUrl }) {
     await page.locator('[data-testid="payment-change"]').getAttribute('data-amount-cents'),
     '0',
   );
+  await page.locator('[data-testid="payment-settle"]').tap();
+  await page.waitForSelector('[data-testid="ticket-empty"]', { timeout: 20000 });
+
+  /* ------------------------------------------------- FIN-03 split cash bill */
+  banner('FIN-03 · partial cash from a larger bill');
+
+  await page.locator('[data-testid="catalog-search-input"]').fill('');
+  await page.waitForTimeout(150);
+  await page.locator('[data-testid="product-tile-menu-sparkling-water"]').tap();
+  await page.waitForFunction(
+    () => Number(document.querySelector('[data-testid="active-ticket"]').getAttribute('data-item-count')) === 1,
+    null,
+    { timeout: 10_000 },
+  );
+  await page.locator('[data-testid="ticket-checkout-button"]').tap();
+  await page.waitForSelector('[data-testid="payment-modal"]');
+
+  const smallBalance = Number(
+    await page.locator('[data-testid="payment-balance"]').getAttribute('data-amount-cents'),
+  );
+
+  // Guest hands over a $5.00 bill against a ~$3.00 balance.
+  for (const key of ['5', '.', '0', '0']) {
+    await page.locator(`[data-testid="numpad-key-${key === '.' ? '\\.' : key}"]`).tap();
+  }
+
+  runner.check(
+    'an over-tendered bill offers the apply split',
+    await page.locator('[data-testid="payment-split-hint"]').isVisible(),
+  );
+  runner.checkEqual(
+    'the apply target is enabled once the bill exceeds the balance',
+    await page.locator('[data-testid="payment-entry-target-apply"]').isEnabled(),
+    true,
+  );
+  runner.checkEqual(
+    'the full bill is not silently consumed by the balance',
+    await page.locator('[data-testid="payment-numpad-amount"]').innerText(),
+    '$5.00',
+  );
+
+  await page.locator('[data-testid="payment-entry-target-apply"]').tap();
+  for (const key of ['2', '.', '0', '0']) {
+    await page.locator(`[data-testid="numpad-key-${key === '.' ? '\\.' : key}"]`).tap();
+  }
+
+  runner.checkEqual(
+    'the applied amount is booked independently of the bill',
+    await page.locator('[data-testid="payment-applied"]').getAttribute('data-amount-cents'),
+    '200',
+  );
+  runner.checkEqual(
+    'change equals the bill minus the applied amount',
+    await page.locator('[data-testid="payment-change"]').getAttribute('data-amount-cents'),
+    '300',
+  );
+
+  await page.locator('[data-testid="payment-settle"]').tap();
+  await page.waitForSelector('[data-testid="payment-history"]');
+  runner.checkEqual(
+    'the partial cash leaves the remainder outstanding',
+    Number(await page.locator('[data-testid="payment-balance"]').getAttribute('data-amount-cents')),
+    smallBalance - 200,
+  );
+
+  // Finish the remainder on card so the ticket settles.
+  await page.locator('[data-testid="payment-method-credit_card"]').tap();
   await page.locator('[data-testid="payment-settle"]').tap();
   await page.waitForSelector('[data-testid="ticket-empty"]', { timeout: 20000 });
 
@@ -484,6 +658,18 @@ async function run({ browser, baseUrl }) {
     persisted.payments.every((payment) =>
       payment.methods.every(
         (method, index) => method === 'cash' || (payment.change[index] === 0 && payment.tenders[index] === payment.amounts[index]),
+      ),
+    ),
+    JSON.stringify(persisted.payments),
+  );
+  runner.check(
+    'a split bill records the applied amount, the bill and the change',
+    persisted.payments.some((payment) =>
+      payment.methods.some(
+        (method, index) =>
+          method === 'cash' &&
+          payment.tenders[index] === payment.amounts[index] + payment.change[index] &&
+          payment.change[index] > 0,
       ),
     ),
     JSON.stringify(persisted.payments),

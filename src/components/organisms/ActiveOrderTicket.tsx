@@ -26,6 +26,11 @@ export interface ActiveOrderTicketProps {
   readonly onIncrementQuantity: (clientLineItemId: UUID, delta: number) => void;
   readonly onRemoveItem: (clientLineItemId: UUID) => void;
   readonly onApplyItemDiscount: (clientLineItemId: UUID, discountInCents: Cents) => void;
+  /**
+   * Opens the numpad for a line discount. When provided it replaces the legacy
+   * one-tap discount so the cashier always chooses the amount.
+   */
+  readonly onOpenItemDiscount?: (clientLineItemId: UUID) => void;
   readonly onEditLineItem: (clientLineItemId: UUID) => void;
   readonly onSetDiningOption: (diningOption: DiningOption) => void;
   readonly onSetGuestCount: (guestCount: number) => void;
@@ -46,6 +51,9 @@ const DINING_OPTIONS: readonly { value: DiningOption; label: string }[] = [
 ];
 
 type StatusTone = 'info' | 'tender' | 'success' | 'muted';
+
+/** Fallback line discount when no numpad workflow is wired. */
+const DEFAULT_LINE_DISCOUNT_IN_CENTS = 100;
 
 const STATUS_LABELS: Record<OrderStatus, { label: string; tone: StatusTone }> = {
   draft: { label: 'Open', tone: 'info' },
@@ -95,6 +103,7 @@ export function ActiveOrderTicket({
   onIncrementQuantity,
   onRemoveItem,
   onApplyItemDiscount,
+  onOpenItemDiscount,
   onEditLineItem,
   onSetDiningOption,
   onSetGuestCount,
@@ -208,7 +217,11 @@ export function ActiveOrderTicket({
                   onIncrement={onIncrementQuantity}
                   onRemove={onRemoveItem}
                   onEdit={onEditLineItem}
-                  onDiscount={(clientLineItemId) => onApplyItemDiscount(clientLineItemId, 100)}
+                  onDiscount={(clientLineItemId) =>
+                    onOpenItemDiscount
+                      ? onOpenItemDiscount(clientLineItemId)
+                      : onApplyItemDiscount(clientLineItemId, DEFAULT_LINE_DISCOUNT_IN_CENTS)
+                  }
                   compact
                 />
               </li>

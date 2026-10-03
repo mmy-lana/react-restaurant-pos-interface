@@ -263,7 +263,16 @@ export function describeModifiers(modifiers: readonly SelectedModifier[]): strin
   return modifiers.map((modifier) => modifier.optionName).join(' · ');
 }
 
-/** Cryptographically strong identifier with a deterministic fallback. */
+let uuidFallbackCounter = 0;
+
+/**
+ * Cryptographically strong identifier.
+ *
+ * Uses `crypto.randomUUID()` when available and falls back to
+ * `crypto.getRandomValues()`. The last-resort branch (no Web Crypto at all)
+ * uses a monotonic counter rather than a pseudo-random generator, which is
+ * predictable and therefore unsuitable for payment and ticket identifiers.
+ */
 export function createUuid(): UUID {
   const cryptoRef: Crypto | undefined =
     typeof globalThis !== 'undefined' ? (globalThis.crypto as Crypto | undefined) : undefined;
@@ -280,5 +289,27 @@ export function createUuid(): UUID {
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   }
 
-  return `id-${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+  uuidFallbackCounter += 1;
+  return `id-${Date.now().toString(36)}-${uuidFallbackCounter.toString(36)}`;
+}
+
+/**
+ * Builds an acquirer-style authorization reference from Web Crypto entropy.
+ * Used for card-present tenders; cash tenders carry no reference.
+ */
+export function createTransactionReference(prefix = 'AUTH'): string {
+  const cryptoRef: Crypto | undefined =
+    typeof globalThis !== 'undefined' ? (globalThis.crypto as Crypto | undefined) : undefined;
+
+  if (cryptoRef && typeof cryptoRef.getRandomValues === 'function') {
+    const bytes = cryptoRef.getRandomValues(new Uint8Array(8));
+    const token = Array.from(bytes, (byte) => byte.toString(36).padStart(2, '0'))
+      .join('')
+      .slice(0, 10)
+      .toUpperCase();
+    return `${prefix}-${token}`;
+  }
+
+  uuidFallbackCounter += 1;
+  return `${prefix}-${Date.now().toString(36)}${uuidFallbackCounter.toString(36)}`.toUpperCase();
 }

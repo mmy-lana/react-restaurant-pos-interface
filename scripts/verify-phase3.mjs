@@ -82,8 +82,48 @@ async function run({ browser, baseUrl }) {
   );
   runner.checkEqual(
     'sold-out tile is marked aria-disabled yet stays focusable',
-    await soldOutTile.getAttribute('aria-disabled'),
+    await page
+      .locator('[data-testid="product-ring-menu-mushroom-swiss"]')
+      .getAttribute('aria-disabled'),
     'true',
+  );
+
+  // UI-01: the customize control must never sit on top of the price figure.
+  const collision = await page.evaluate(() => {
+    const tile = document.querySelector('[data-testid="product-tile-menu-smash-classic"]');
+    const customize = tile.querySelector('[data-testid="product-customize-menu-smash-classic"]');
+    const price = tile.querySelector('[data-testid="product-price-menu-smash-classic"]');
+    const a = customize.getBoundingClientRect();
+    const b = price.getBoundingClientRect();
+    const overlaps =
+      a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    return { overlaps, width: a.width, height: a.height, position: getComputedStyle(customize).position };
+  });
+  runner.checkEqual('customize control never overlaps the price', collision.overlaps, false);
+  runner.check(
+    'customize control meets the 44x44 touch minimum',
+    collision.width >= 44 && collision.height >= 44,
+    `${Math.round(collision.width)}x${Math.round(collision.height)}`,
+  );
+  runner.check(
+    'customize control is laid out inline, not absolutely',
+    collision.position !== 'absolute' && collision.position !== 'fixed',
+    collision.position,
+  );
+
+  const badgeText = await page
+    .locator('[data-testid="product-tile-menu-smash-classic"] [data-testid="tile-modifier-badge"]')
+    .innerText();
+  runner.checkEqual('modifier badge label stays short', badgeText.trim(), 'REQUIRED');
+  runner.check(
+    'modifier badge is not visually truncated',
+    await page.evaluate(() => {
+      const badge = document.querySelector(
+        '[data-testid="product-tile-menu-smash-classic"] [data-testid="tile-modifier-badge"]',
+      );
+      const label = badge.querySelector('span');
+      return label.scrollWidth <= label.clientWidth + 1;
+    }),
   );
   runner.check(
     'sold-out tile carries an 86\'d badge',

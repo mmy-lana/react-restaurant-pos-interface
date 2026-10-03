@@ -194,6 +194,34 @@ export async function saveOrderWithOptimisticLock(
   );
 }
 
+/**
+ * Releases a floor-plan table back to the pool.
+ *
+ * Used when a cashier un-seats a ticket: clearing the association in React
+ * state alone would leave `activeOrderId` and the occupied status behind in
+ * IndexedDB, so the next party would be seated at a table the floor still
+ * believes is taken. When `activeOrderId` is supplied, the row is only cleared
+ * if it really belongs to that order, so a concurrent seating is never undone.
+ */
+export async function releaseDiningTable(
+  posDb: POSDatabase,
+  tableId: UUID,
+  activeOrderId?: UUID,
+): Promise<void> {
+  await posDb.transaction('rw', posDb.diningTables, async () => {
+    const table = await posDb.diningTables.get(tableId);
+    if (!table) return;
+    if (activeOrderId !== undefined && table.activeOrderId !== activeOrderId) return;
+
+    await posDb.diningTables.put({
+      ...table,
+      status: 'available',
+      activeOrderId: undefined,
+      version: table.version + 1,
+    });
+  });
+}
+
 /** Explicitly opens the database; safe to call repeatedly (Dexie memoizes). */
 export async function openPOSDatabase(posDb: POSDatabase = db): Promise<void> {
   if (!posDb.isOpen()) {

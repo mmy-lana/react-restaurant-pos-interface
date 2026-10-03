@@ -1,5 +1,5 @@
 import { Banknote, CreditCard, Gift, Loader2, Smartphone, Split, TriangleAlert } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { NumpadGrid } from '@/components/molecules/NumpadGrid';
 import { QuickCashButtons } from '@/components/molecules/QuickCashButtons';
 import { Badge } from '@/components/primitives/Badge';
@@ -10,6 +10,7 @@ import type { OrderSummary, PaymentMethod, PaymentRecord, UUID } from '@/types/p
 import { cn } from '@/utils/cn';
 import {
   FinancialEngine,
+  createTransactionReference,
   formatCents,
   formatCentsPlain,
   parseMoneyInputToCents,
@@ -76,7 +77,22 @@ export function PaymentCheckoutModal({
   onSettle,
 }: PaymentCheckoutModalProps) {
   const [method, setMethod] = useState<PaymentMethod>('cash');
+  /** Physical cash handed over (cash tenders only). */
   const [tenderInput, setTenderInput] = useState<string>('');
+  /** Portion of that cash the cashier wants applied to the balance. */
+  const [applyInput, setApplyInput] = useState<string>('');
+  /** Which value the shared keypad is currently editing. */
+  const [entryTarget, setEntryTarget] = useState<'tender' | 'apply'>('tender');
+
+  // Every checkout session opens clean: cash method, empty keypad, no leftover
+  // split entry from the previous ticket.
+  useEffect(() => {
+    if (!isOpen) return;
+    setMethod('cash');
+    setTenderInput('');
+    setApplyInput('');
+    setEntryTarget('tender');
+  }, [isOpen, orderId]);
 
   const balanceInCents = summary.remainingBalanceInCents;
   const quickCashOptions = useMemo(
@@ -86,21 +102,33 @@ export function PaymentCheckoutModal({
 
   const isCashTender = method === 'cash';
   const hasTypedAmount = tenderInput.trim().length > 0;
+  const hasApplyAmount = applyInput.trim().length > 0;
   const parsedAmountInCents = hasTypedAmount ? parseMoneyInputToCents(tenderInput) : 0;
+  const parsedApplyInCents = hasApplyAmount ? parseMoneyInputToCents(applyInput) : 0;
 
   /**
-   * Cash: the keypad is the money physically handed over, so it may exceed the
-   * balance and yields change. Every other method settles exactly what is owed,
-   * so the keypad is the amount applied toward the balance and change is always
-   * $0.00 — over-tendering at a terminal would just fabricate money.
+   * Cash: the first entry is the money physically handed over, which may exceed
+   * the balance. The second entry designates how much of that cash is applied,
+   * so a $50 bill against a $20 partial payment books $20 and returns $30
+   * instead of silently consuming the whole bill.
+   *
+   * Every other method settles exactly what is owed: the keypad is the amount
+   * applied toward the balance and change is always $0.00 — over-tendering at a
+   * terminal would just fabricate money.
    */
   const tenderAmountInCents = isCashTender
     ? hasTypedAmount
       ? parsedAmountInCents
       : balanceInCents
     : 0;
-  const appliedAmountInCents = isCashTender
+  const maxApplicableInCents = isCashTender
     ? Math.min(tenderAmountInCents, balanceInCents)
+    : balanceInCents;
+  const canSplitCash = isCashTender && tenderAmountInCents > balanceInCents && balanceInCents > 0;
+  const appliedAmountInCents = isCashTender
+    ? hasApplyAmount
+      ? Math.min(parsedApplyInCents, maxApplicableInCents)
+      : maxApplicableInCents
     : hasTypedAmount
       ? Math.min(parsedAmountInCents, balanceInCents)
       : balanceInCents;
@@ -108,15 +136,30 @@ export function PaymentCheckoutModal({
   const isPartial = appliedAmountInCents < balanceInCents;
   const typedAmountExceedsBalance =
     hasTypedAmount && parsedAmountInCents > balanceInCents && !isCashTender;
+  const isEditingAppliedAmount = entryTarget === 'apply' && canSplitCash;
 
   const appendDigit = (digit: string): void => {
     AudioFeedback.vibrate(8);
-    setTenderInput((current) => {
+
+    const updateEntry = (current: string): string => {
       if (digit === '.' && current.includes('.')) return current;
       if (current.includes('.') && current.split('.')[1]?.length >= 2) return current;
       const next = (current === '' || current === '0') && digit !== '.' ? digit : `${current}${digit}`;
       return next.slice(0, 9);
-    });
+    };
+
+    if (isEditingAppliedAmount) setApplyInput(updateEntry);
+    else setTenderInput(updateEntry);
+  };
+
+  const backspaceEntry = (): void => {
+    if (isEditingAppliedAmount) setApplyInput((current) => current.slice(0, -1));
+    else setTenderInput((current) => current.slice(0, -1));
+  };
+
+  const clearEntry = (): void => {
+    if (isEditingAppliedAmount) setApplyInput('');
+    else setTenderInput('');
   };
 
   const handleSettle = async (): Promise<void> => {
@@ -135,6 +178,8 @@ export function PaymentCheckoutModal({
 
     await onSettle(payment);
     setTenderInput('');
+    setApplyInput('');
+    setEntryTarget('tender');
   };
 
   return (
@@ -156,7 +201,13 @@ export function PaymentCheckoutModal({
           <div className="grid grid-cols-2 gap-2 sm:w-auto">
             <TouchButton label="Cancel" variant="ghost" onPress={onClose} disabled={isMutating} testId="payment-cancel" />
             <TouchButton
-              label={isPartial ? `Apply ${formatCents(appliedAmountInCents)}` : 'Settle ticket'}
+              label={
+                changeInCents > 0
+                  ? `Apply ${formatCents(appliedAmountInCents)}`
+                  : isPartial
+                    ? `Apply ${formatCents(appliedAmountInCents)}`
+                    : 'Settle ticket'
+              }
               variant={isPartial ? 'tender' : 'primary'}
               onPress={() => void handleSettle()}
               loading={isMutating}
@@ -219,7 +270,11 @@ export function PaymentCheckoutModal({
                   key={entry.value}
                   type="button"
                   onClick={() => {
-                    if (entry.value !== method) setTenderInput('');
+                    if (entry.value !== method) {
+                      setTenderInput('');
+                      setApplyInput('');
+                      setEntryTarget('tender');
+                    }
                     setMethod(entry.value);
                     AudioFeedback.playTick();
                   }}
@@ -250,6 +305,8 @@ export function PaymentCheckoutModal({
               balanceInCents={balanceInCents}
               onSelect={(amountInCents) => {
                 setTenderInput((amountInCents / 100).toFixed(2));
+                setApplyInput('');
+                setEntryTarget('tender');
                 AudioFeedback.triggerBeep(760, 0.05, 'triangle');
               }}
               disabled={balanceInCents <= 0 || !isCashTender}
@@ -269,10 +326,70 @@ export function PaymentCheckoutModal({
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
               <p className="font-mono text-xs uppercase tracking-widest text-ink-muted">
-                {isCashTender ? 'Cash tendered' : 'Amount to apply'}
+                {isCashTender
+                  ? isEditingAppliedAmount
+                    ? 'Apply to balance'
+                    : 'Cash tendered'
+                  : 'Amount to apply'}
               </p>
               {isMutating && <Loader2 className="h-4 w-4 animate-spin text-primary" aria-hidden="true" />}
             </div>
+
+            {/* FIN-03: a single keypad edits either the physical cash or the
+                portion applied to the balance. Splitting is only offered when
+                the cash actually exceeds what is owed. */}
+            {isCashTender && (
+              <div
+                role="radiogroup"
+                aria-label="Amount entry target"
+                data-testid="payment-entry-targets"
+                className="grid grid-cols-2 gap-2"
+              >
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={!isEditingAppliedAmount}
+                  onClick={() => {
+                    setEntryTarget('tender');
+                    AudioFeedback.playTick();
+                  }}
+                  data-testid="payment-entry-target-tender"
+                  data-active={!isEditingAppliedAmount}
+                  className={cn(
+                    'min-h-touch rounded-xl border px-2 text-[10px] font-bold uppercase tracking-widest transition-transform duration-75 active:scale-95',
+                    !isEditingAppliedAmount
+                      ? 'border-primary bg-primary/15 text-primary'
+                      : 'border-line bg-surface text-ink-muted active:bg-surface-raised active:text-ink',
+                  )}
+                >
+                  Cash {formatCents(tenderAmountInCents)}
+                </button>
+
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={isEditingAppliedAmount}
+                  disabled={!canSplitCash}
+                  onClick={() => {
+                    setEntryTarget('apply');
+                    setApplyInput('');
+                    AudioFeedback.playTick();
+                  }}
+                  data-testid="payment-entry-target-apply"
+                  data-active={isEditingAppliedAmount}
+                  className={cn(
+                    'min-h-touch rounded-xl border px-2 text-[10px] font-bold uppercase tracking-widest transition-transform duration-75 active:scale-95',
+                    isEditingAppliedAmount
+                      ? 'border-primary bg-primary/15 text-primary'
+                      : canSplitCash
+                        ? 'border-line bg-surface text-ink-muted active:bg-surface-raised active:text-ink'
+                        : 'border-line bg-surface text-ink-subtle opacity-50',
+                  )}
+                >
+                  Apply {formatCents(appliedAmountInCents)}
+                </button>
+              </div>
+            )}
 
             <div
               data-testid="payment-numpad-display"
@@ -282,18 +399,32 @@ export function PaymentCheckoutModal({
                 data-testid="payment-numpad-amount"
                 className="font-mono text-3xl font-bold tabular-nums text-primary"
               >
-                {hasTypedAmount
-                  ? `$${isCashTender ? tenderInput : formatCentsPlain(appliedAmountInCents)}`
-                  : isCashTender
-                    ? '—'
+                {isCashTender
+                  ? isEditingAppliedAmount
+                    ? `$${hasApplyAmount ? applyInput : formatCentsPlain(maxApplicableInCents)}`
+                    : hasTypedAmount
+                      ? `$${tenderInput}`
+                      : '—'
+                  : hasTypedAmount
+                    ? `$${formatCentsPlain(appliedAmountInCents)}`
                     : `$${formatCentsPlain(balanceInCents)}`}
               </span>
             </div>
 
+            {canSplitCash && (
+              <p
+                data-testid="payment-split-hint"
+                className="rounded-xl border border-tender/40 bg-tender/10 px-3 py-2 font-mono text-[10px] uppercase leading-relaxed tracking-widest text-tender"
+              >
+                Cash tendered exceeds the balance — switch to "Apply" to book part of it and return
+                the rest as change
+              </p>
+            )}
+
             <NumpadGrid
               onDigit={appendDigit}
-              onBackspace={() => setTenderInput((current) => current.slice(0, -1))}
-              onClear={() => setTenderInput('')}
+              onBackspace={backspaceEntry}
+              onClear={clearEntry}
               allowDecimal
               disabled={isMutating}
             />
@@ -330,7 +461,7 @@ export function PaymentCheckoutModal({
   );
 }
 
-/** Simulated acquirer reference for card-present tenders. */
+/** Acquirer-style reference for card-present tenders, backed by Web Crypto. */
 function buildTransactionReference(): string {
-  return `AUTH-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+  return createTransactionReference('AUTH');
 }

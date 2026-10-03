@@ -50,7 +50,7 @@ export function Badge({
       data-tone={tone}
       title={title}
       className={cn(
-        'inline-flex select-none items-center justify-center rounded-md border font-semibold uppercase tracking-wide',
+        'inline-flex shrink-0 select-none items-center justify-center rounded-md border font-semibold uppercase tracking-wide',
         TONE_STYLES[tone],
         SIZE_STYLES[size],
         pulse && 'animate-pulse',

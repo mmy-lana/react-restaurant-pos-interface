@@ -1,4 +1,6 @@
-import { banner, CheckRunner, openRegisterPage, withPreviewServer } from './lib/harness.mjs';
+import { readFile, readdir } from 'node:fs/promises';
+import path from 'node:path';
+import { banner, CheckRunner, openRegisterPage, withPreviewServer, projectRoot } from './lib/harness.mjs';
 
 /**
  * Phase 1 verification: domain model, offline storage, seeding and the boot gate.
@@ -197,6 +199,28 @@ async function run({ browser, baseUrl }) {
     preservedEdits.count,
     20,
   );
+
+  /* ------------------------------------------------ SEC-01 entropy sources */
+  banner('SEC-01 · no pseudo-random entropy in money and id paths');
+
+  const collectSources = async (directory) => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    const files = [];
+    for (const entry of entries) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) files.push(...(await collectSources(fullPath)));
+      else if (/\.(ts|tsx)$/.test(entry.name)) files.push(fullPath);
+    }
+    return files;
+  };
+
+  const sourceFiles = await collectSources(path.join(projectRoot, 'src'));
+  const offenders = [];
+  for (const file of sourceFiles) {
+    const contents = await readFile(file, 'utf8');
+    if (contents.includes('Math.random(')) offenders.push(path.relative(projectRoot, file));
+  }
+  runner.checkEqual('application source never uses Math.random()', offenders, []);
 
   await runner.screenshot('phase1-boot-console');
 

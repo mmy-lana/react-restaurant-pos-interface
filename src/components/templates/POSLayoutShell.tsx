@@ -51,6 +51,14 @@ export function POSLayoutShell(): React.JSX.Element {
 
   const handleScan = useCallback(
     (barcode: string) => {
+      // CONC-02: a scan must never ring stock behind an open overlay. The
+      // reducer state can lag the keystroke, so this guard reads the same state
+      // the overlays render from and bails out before any mutation happens.
+      if (state.activeModal !== 'none' || state.isNumpadOpen || state.isMutating) {
+        AudioFeedback.playWarning();
+        return;
+      }
+
       const menuItem = actions.findMenuItemByBarcode(barcode);
       if (!menuItem) {
         AudioFeedback.playWarning();
@@ -70,7 +78,7 @@ export function POSLayoutShell(): React.JSX.Element {
         scanTimerRef.current = null;
       }, SCAN_TOAST_TIMEOUT_MS);
     },
-    [actions],
+    [actions, state.activeModal, state.isMutating, state.isNumpadOpen],
   );
 
   useBarcodeScanner({ onScan: handleScan });
@@ -150,6 +158,7 @@ export function POSLayoutShell(): React.JSX.Element {
       onIncrementQuantity={actions.incrementQuantity}
       onRemoveItem={actions.removeItem}
       onApplyItemDiscount={actions.applyItemDiscount}
+      onOpenItemDiscount={(clientLineItemId) => actions.openNumpad('item_discount', clientLineItemId)}
       onEditLineItem={actions.editLineItem}
       onSetDiningOption={actions.setDiningOption}
       onSetGuestCount={actions.setGuestCount}

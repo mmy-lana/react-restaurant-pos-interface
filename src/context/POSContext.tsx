@@ -27,6 +27,7 @@ import type {
 import {
   db,
   OptimisticLockError,
+  releaseDiningTable,
   saveOrderWithOptimisticLock,
   type SessionPaymentIntent,
 } from '@/db/posDatabase';
@@ -1100,8 +1101,30 @@ export function POSProvider({ children }: POSProviderProps) {
         AudioFeedback.triggerBeep(760, 0.05, 'triangle');
       },
       clearTable: () => {
+        const tableId = state.currentOrder.tableId;
+        const orderId = state.currentOrder.id;
+
         dispatch({ type: 'ASSIGN_TABLE', payload: { tableId: '', label: '' } });
         AudioFeedback.playTick();
+
+        if (!tableId) return;
+
+        // The floor plan lives in IndexedDB: clearing the link only in memory
+        // would leave the table flagged as occupied by a detached ticket.
+        void (async () => {
+          dispatch({ type: 'SET_MUTATION_STATE', payload: { isMutating: true, error: null } });
+          try {
+            await releaseDiningTable(db, tableId, orderId);
+          } catch (error) {
+            dispatch({
+              type: 'SET_MUTATION_STATE',
+              payload: { isMutating: false, error: toErrorMessage(error) },
+            });
+            AudioFeedback.playWarning();
+          } finally {
+            dispatch({ type: 'SET_MUTATION_STATE', payload: { isMutating: false } });
+          }
+        })();
       },
       openPayment: () => {
         if (state.currentOrder.lineItems.length === 0) {
