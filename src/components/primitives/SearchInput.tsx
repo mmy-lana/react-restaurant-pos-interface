@@ -82,7 +82,7 @@ export function SearchInput({
         autoFocus={autoFocus}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
-        className="min-h-touch w-full min-w-0 flex-1 bg-transparent text-base text-ink outline-none placeholder:text-ink-subtle [&::-webkit-search-cancel-button]:appearance-none"
+        className="min-h-touch w-full min-w-0 flex-1 bg-transparent text-base text-ink outline-none placeholder:text-ink-muted [&::-webkit-search-cancel-button]:appearance-none"
       />
 
       {value.length > 0 && (

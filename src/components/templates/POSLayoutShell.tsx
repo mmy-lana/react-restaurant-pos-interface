@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NumpadGrid } from '@/components/molecules/NumpadGrid';
 import { ActiveOrderTicket } from '@/components/organisms/ActiveOrderTicket';
 import { CatalogGrid } from '@/components/organisms/CatalogGrid';
+import { HelpGuideModal } from '@/components/organisms/HelpGuideModal';
 import { ModifierSelectionModal } from '@/components/organisms/ModifierSelectionModal';
 import { OrderHistoryModal } from '@/components/organisms/OrderHistoryModal';
 import { PaymentCheckoutModal } from '@/components/organisms/PaymentCheckoutModal';
@@ -41,6 +42,7 @@ export function POSLayoutShell(): React.JSX.Element {
 
   const [isTableDrawerOpen, setTableDrawerOpen] = useState(false);
   const [isHistoryOpen, setHistoryOpen] = useState(false);
+  const [isHelpOpen, setHelpOpen] = useState(false);
   const [isTicketSheetOpen, setTicketSheetOpen] = useState(false);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const scanTimerRef = useRef<number | null>(null);
@@ -202,6 +204,7 @@ export function POSLayoutShell(): React.JSX.Element {
         audioMuted={audioMuted}
         onToggleMute={toggleAudioMute}
         onOpenOrderHistory={() => setHistoryOpen(true)}
+        onOpenHelp={() => setHelpOpen(true)}
         isDegraded={state.seedError !== null || state.persistenceError !== null}
       />
 
@@ -331,6 +334,8 @@ export function POSLayoutShell(): React.JSX.Element {
         onClose={actions.closeModal}
         onSettle={actions.settleOrder}
       />
+
+      <HelpGuideModal isOpen={isHelpOpen} onClose={() => setHelpOpen(false)} />
 
       <OrderHistoryModal
         isOpen={isHistoryOpen}

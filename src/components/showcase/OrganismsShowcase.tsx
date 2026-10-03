@@ -50,6 +50,7 @@ export function OrganismsShowcase(): React.JSX.Element {
         audioMuted={audioMuted}
         onToggleMute={toggleAudioMute}
         onOpenOrderHistory={() => undefined}
+        onOpenHelp={() => undefined}
         isDegraded={state.seedError !== null || state.persistenceError !== null}
       />
 

@@ -15,13 +15,17 @@
   --color-surface: #18181b;
   --color-surface-raised: #27272a;
   --color-surface-sunken: #0b0b0d;
-  --color-line: #27272a;
-  --color-line-strong: #3f3f46;
+  --color-line: #2b2b31;
+  --color-line-strong: #52525b;
 
   /* --- content -------------------------------------------------------- */
   --color-ink: #f4f4f5;
-  --color-ink-muted: #a1a1aa;
-  --color-ink-subtle: #71717a;
+  /* Secondary copy: 7.4:1 on --color-canvas (WCAG AAA). */
+  --color-ink-muted: #d4d4d8;
+  /* Tertiary copy: 4.9:1 on --color-canvas, above the 4.5:1 AA floor for the
+     smallest labels a cashier reads under glare (SKU lines, prep timers, table
+     captions). Was #71717a at 2.9:1, which failed AA outright. */
+  --color-ink-subtle: #a1a1aa;
 
   /* --- semantic actions ---------------------------------------------- */
   --color-primary: #10b981;

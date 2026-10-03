@@ -35,8 +35,16 @@ export class AudioFeedback {
       const AudioContextConstructor =
         window.AudioContext ?? (window as ExtendedWindow).webkitAudioContext;
 
-      if (AudioContextConstructor) {
+      if (!AudioContextConstructor) return null;
+
+      // SEC-02: kiosk iframes, locked-down permissions policies and headless
+      // embeddings can throw from the constructor. A failed audio pipeline is
+      // never worth breaking a live checkout over, so it degrades to silence.
+      try {
         AudioFeedback.ctx = new AudioContextConstructor();
+      } catch {
+        AudioFeedback.ctx = null;
+        return null;
       }
     }
 

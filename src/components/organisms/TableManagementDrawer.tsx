@@ -1,7 +1,8 @@
-import { Armchair, Users, X } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { Armchair, TriangleAlert, Users, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { Badge, StatusDot } from '@/components/primitives/Badge';
 import { TouchButton } from '@/components/primitives/TouchButton';
+import { ModalShell } from '@/components/primitives/ModalShell';
 import type { DiningTableRecord, UUID } from '@/types/pos';
 import { cn } from '@/utils/cn';
 import { AudioFeedback } from '@/utils/audioFeedback';
@@ -47,6 +48,26 @@ export function TableManagementDrawer({
 }: TableManagementDrawerProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const ghostClickGuardUntilRef = useRef(0);
+  const [pendingTable, setPendingTable] = useState<DiningTableRecord | null>(null);
+
+  const requestAssignment = (table: DiningTableRecord): void => {
+    // DATA-04: a seated or reserved table is never reassigned on a single tap.
+    if (table.status === 'occupied' || table.status === 'reserved') {
+      setPendingTable(table);
+      return;
+    }
+    AudioFeedback.vibrate(12);
+    onAssign(table.id, table.label);
+    onClose();
+  };
+
+  const confirmPendingAssignment = (): void => {
+    if (!pendingTable) return;
+    AudioFeedback.vibrate(12);
+    onAssign(pendingTable.id, pendingTable.label);
+    setPendingTable(null);
+    onClose();
+  };
 
   useEffect(() => {
     const blockGhostClick = (event: MouseEvent): void => {
@@ -163,11 +184,7 @@ export function TableManagementDrawer({
                       <button
                         key={table.id}
                         type="button"
-                        onClick={() => {
-                          AudioFeedback.vibrate(12);
-                          onAssign(table.id, table.label);
-                          onClose();
-                        }}
+                        onClick={() => requestAssignment(table)}
                         aria-pressed={isAssigned}
                         data-testid={`table-card-${table.label}`}
                         data-status={table.status}
@@ -222,6 +239,40 @@ export function TableManagementDrawer({
           />
         </footer>
       </div>
+
+      <ModalShell
+        isOpen={pendingTable !== null}
+        onClose={() => setPendingTable(null)}
+        title={pendingTable ? `${pendingTable.label} is ${STATUS_LABELS[pendingTable.status].label.toLowerCase()}` : 'Table unavailable'}
+        subtitle={pendingTable ? `Seats ${pendingTable.capacity} · ${SECTION_LABELS[pendingTable.section]}` : undefined}
+        size="sm"
+        testId="table-confirm-modal"
+        footer={
+          <div className="grid grid-cols-2 gap-2">
+            <TouchButton
+              label="Keep table"
+              variant="ghost"
+              onPress={() => setPendingTable(null)}
+              testId="table-confirm-cancel"
+            />
+            <TouchButton
+              label="Assign anyway"
+              variant="danger"
+              onPress={confirmPendingAssignment}
+              testId="table-confirm-accept"
+            />
+          </div>
+        }
+      >
+        <div className="flex gap-3">
+          <TriangleAlert className="h-6 w-6 shrink-0 text-tender" aria-hidden="true" />
+          <p className="text-sm leading-relaxed text-ink-muted">
+            {pendingTable?.status === 'occupied'
+              ? 'This table already has an open ticket. Assigning it here moves the floor plan without closing the other ticket, which can leave two parties recorded on one table.'
+              : 'This table is held for a reservation. Assigning it now releases the hold.'}
+          </p>
+        </div>
+      </ModalShell>
     </div>
   );
 }

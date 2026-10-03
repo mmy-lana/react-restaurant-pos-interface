@@ -194,7 +194,7 @@ export function ActiveOrderTicket({
               data-testid={`ticket-dining-${option.value}`}
               data-active={diningOption === option.value}
               className={cn(
-                'min-h-11 rounded-lg px-1 text-[10px] font-bold uppercase tracking-wide transition-transform duration-75 active:scale-95',
+                'min-h-touch rounded-lg px-1 text-[10px] font-bold uppercase tracking-wide transition-transform duration-75 active:scale-95',
                 diningOption === option.value
                   ? 'bg-primary text-primary-contrast'
                   : 'text-ink-muted active:bg-surface-raised active:text-ink',

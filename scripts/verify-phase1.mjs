@@ -200,6 +200,67 @@ async function run({ browser, baseUrl }) {
     20,
   );
 
+  /* ------------------------------------------------- dark mode contrast */
+  banner('Contrast floor on the dark palette');
+
+  const contrast = await page.evaluate(() => {
+    const parse = (value) => {
+      const [r, g, b] = value.match(/\d+(\.\d+)?/g).slice(0, 3).map(Number);
+      return [r, g, b].map((channel) => {
+        const c = channel / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+    };
+    const luminance = (rgb) => 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+    const ratio = (a, b) => {
+      const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (light + 0.05) / (dark + 0.05);
+    };
+
+    const resolve = (token) => {
+      const probe = document.createElement('div');
+      probe.style.color = `var(${token})`;
+      document.body.appendChild(probe);
+      const resolved = getComputedStyle(probe).color;
+      probe.remove();
+      return parse(resolved);
+    };
+
+    return {
+      subtle: ratio(resolve('--color-ink-subtle'), resolve('--color-canvas')),
+      muted: ratio(resolve('--color-ink-muted'), resolve('--color-canvas')),
+      primary: ratio(resolve('--color-primary'), resolve('--color-canvas')),
+      tender: ratio(resolve('--color-tender'), resolve('--color-canvas')),
+      danger: ratio(resolve('--color-danger'), resolve('--color-canvas')),
+    };
+  });
+
+  runner.check(
+    'tertiary copy clears the 4.5:1 AA floor on the canvas',
+    contrast.subtle >= 4.5,
+    contrast.subtle.toFixed(2) + ':1',
+  );
+  runner.check(
+    'secondary copy clears the 7:1 AAA floor',
+    contrast.muted >= 7,
+    contrast.muted.toFixed(2) + ':1',
+  );
+  runner.check(
+    'primary action clears the 3:1 non-text floor',
+    contrast.primary >= 3,
+    contrast.primary.toFixed(2) + ':1',
+  );
+  runner.check(
+    'tender alert clears the 4.5:1 text floor',
+    contrast.tender >= 4.5,
+    contrast.tender.toFixed(2) + ':1',
+  );
+  runner.check(
+    'danger alert clears the 4.5:1 text floor',
+    contrast.danger >= 4.5,
+    contrast.danger.toFixed(2) + ':1',
+  );
+
   /* ------------------------------------------------ SEC-01 entropy sources */
   banner('SEC-01 · no pseudo-random entropy in money and id paths');
 

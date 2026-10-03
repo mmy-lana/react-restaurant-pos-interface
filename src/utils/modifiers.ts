@@ -4,6 +4,7 @@ import type {
   SelectedModifierRecord,
   UUID,
 } from '@/types/pos';
+import { sanitizePrinterSafeText } from '@/utils/sanitize';
 
 /**
  * Pure helpers backing the modifier selection modal.
@@ -115,6 +116,11 @@ export function resolveModifiersFromDraft(
   }
 
   return resolved;
+}
+
+/** Sanitizes a kitchen note before it is attached to a ticket row. */
+export function sanitizeKitchenNote(note: string): string {
+  return sanitizePrinterSafeText(note);
 }
 
 /** True when the item forces the cashier through the modifier modal. */

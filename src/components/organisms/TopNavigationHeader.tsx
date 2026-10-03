@@ -1,4 +1,13 @@
-import { Armchair, CircleUser, MonitorSmartphone, Volume2, VolumeX, Wifi, WifiOff } from 'lucide-react';
+import {
+  Armchair,
+  CircleUser,
+  HelpCircle,
+  MonitorSmartphone,
+  Volume2,
+  VolumeX,
+  Wifi,
+  WifiOff,
+} from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Badge, StatusDot } from '@/components/primitives/Badge';
 import { TouchButton } from '@/components/primitives/TouchButton';
@@ -14,6 +23,8 @@ export interface TopNavigationHeaderProps {
   readonly audioMuted: boolean;
   readonly onToggleMute: () => void;
   readonly onOpenOrderHistory: () => void;
+  /** Opens the in-terminal operator guide. */
+  readonly onOpenHelp: () => void;
   readonly isDegraded: boolean;
   readonly className?: string;
 }
@@ -32,6 +43,7 @@ export function TopNavigationHeader({
   audioMuted,
   onToggleMute,
   onOpenOrderHistory,
+  onOpenHelp,
   isDegraded,
   className,
 }: TopNavigationHeaderProps) {
@@ -134,6 +146,17 @@ export function TopNavigationHeader({
           variant="quiet"
           onPress={onOpenOrderHistory}
           testId="header-history-button"
+        />
+
+        <TouchButton
+          label="Operator guide"
+          icon={HelpCircle}
+          iconOnly
+          size="sm"
+          variant="quiet"
+          onPress={onOpenHelp}
+          ariaLabel="Open the terminal operator guide"
+          testId="header-help-button"
         />
       </div>
     </header>

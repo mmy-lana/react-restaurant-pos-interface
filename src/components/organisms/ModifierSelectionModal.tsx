@@ -1,13 +1,19 @@
 import { Check, Layers, Minus, Plus, TriangleAlert } from 'lucide-react';
-import { useMemo } from 'react';
+import { useCallback, useMemo, useRef, type KeyboardEvent } from 'react';
 import { Badge } from '@/components/primitives/Badge';
 import { ModalShell } from '@/components/primitives/ModalShell';
 import { PriceDisplay } from '@/components/primitives/PriceDisplay';
 import { TouchButton } from '@/components/primitives/TouchButton';
-import type { Cents, MenuItem, SelectedModifier, UUID } from '@/types/pos';
+import type { Cents, MenuItem, ModifierGroup, SelectedModifier, UUID } from '@/types/pos';
+import { MAX_NOTE_LENGTH } from '@/utils/sanitize';
 import { cn } from '@/utils/cn';
 import { formatCents } from '@/utils/financial';
-import { resolveModifiersFromDraft, validateModifierDraft, type ModifierDraft } from '@/utils/modifiers';
+import {
+  resolveModifiersFromDraft,
+  sanitizeKitchenNote,
+  validateModifierDraft,
+  type ModifierDraft,
+} from '@/utils/modifiers';
 
 export interface ModifierSelectionModalProps {
   readonly isOpen: boolean;
@@ -51,6 +57,76 @@ export function ModifierSelectionModal({
   const resolvedModifiers = useMemo(
     () => (item ? resolveModifiersFromDraft(item, draft) : []),
     [draft, item],
+  );
+
+  const groupRefs = useRef<Record<UUID, HTMLFieldSetElement | null>>({});
+
+  /**
+   * A11Y-01 roving navigation: arrow keys move between the options of one
+   * modifier group, Home/End jump to its ends, and single-choice groups pick
+   * the focused option on arrival — the behaviour a radio group is expected to
+   * have, without a cashier ever needing a pointer.
+   */
+  const focusOption = useCallback(
+    (group: ModifierGroup, direction: 1 | -1 | 'first' | 'last'): void => {
+      const fieldset = groupRefs.current[group.id];
+      if (!fieldset) return;
+
+      const options = Array.from(
+        fieldset.querySelectorAll<HTMLButtonElement>('button[data-modifier-option]'),
+      );
+      if (options.length === 0) return;
+
+      const currentIndex = options.indexOf(document.activeElement as HTMLButtonElement);
+
+      let nextIndex: number;
+      if (direction === 'first') nextIndex = 0;
+      else if (direction === 'last') nextIndex = options.length - 1;
+      else if (currentIndex === -1) nextIndex = direction === 1 ? 0 : options.length - 1;
+      else nextIndex = (currentIndex + direction + options.length) % options.length;
+
+      const nextOption = options[nextIndex];
+      if (!nextOption) return;
+
+      nextOption.focus({ preventScroll: false });
+
+      const optionId = nextOption.getAttribute('data-modifier-option');
+      if (optionId && group.maxSelections <= 1) {
+        onToggleOption(group.id, optionId);
+      }
+    },
+    [onToggleOption],
+  );
+
+  const handleGroupKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLFieldSetElement>, group: ModifierGroup): void => {
+      const target = event.target as HTMLElement;
+      if (target.getAttribute('data-modifier-option') === null) return;
+
+      switch (event.key) {
+        case 'ArrowDown':
+        case 'ArrowRight':
+          event.preventDefault();
+          focusOption(group, 1);
+          break;
+        case 'ArrowUp':
+        case 'ArrowLeft':
+          event.preventDefault();
+          focusOption(group, -1);
+          break;
+        case 'Home':
+          event.preventDefault();
+          focusOption(group, 'first');
+          break;
+        case 'End':
+          event.preventDefault();
+          focusOption(group, 'last');
+          break;
+        default:
+          break;
+      }
+    },
+    [focusOption],
   );
 
   if (!item || !validation) {
@@ -119,6 +195,10 @@ export function ModifierSelectionModal({
           return (
             <fieldset
               key={group.id}
+              ref={(node) => {
+                groupRefs.current[group.id] = node;
+              }}
+              onKeyDown={(event) => handleGroupKeyDown(event, group)}
               data-testid={`modifier-group-${group.id}`}
               data-invalid={Boolean(errorMessage)}
               className="space-y-2"
@@ -140,9 +220,10 @@ export function ModifierSelectionModal({
               </legend>
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {group.options.map((option) => {
+                {group.options.map((option, optionIndex) => {
                   const isSelected = selectedOptions.includes(option.id);
                   const isAtCapacity = !isSelected && selectedOptions.length >= group.maxSelections;
+                  const isFirstOption = optionIndex === 0;
 
                   return (
                     <button
@@ -152,8 +233,14 @@ export function ModifierSelectionModal({
                       aria-checked={isSelected}
                       onClick={() => onToggleOption(group.id, option.id)}
                       data-testid={`modifier-option-${option.id}`}
+                      data-modifier-option={option.id}
                       data-selected={isSelected}
                       data-blocked={isAtCapacity}
+                      tabIndex={
+                        (draft[group.id] ?? []).includes(option.id) || isFirstOption
+                          ? 0
+                          : -1
+                      }
                       className={cn(
                         'flex min-h-touch items-center gap-3 rounded-xl border px-3 py-2 text-left',
                         'transition-transform duration-75 active:scale-95',
@@ -248,11 +335,19 @@ export function ModifierSelectionModal({
               value={note}
               onChange={(event) => onNoteChange(event.target.value)}
               rows={2}
-              maxLength={140}
+              maxLength={MAX_NOTE_LENGTH}
               placeholder="Allergies, timing, cut in half…"
               data-testid="modifier-note"
-              className="min-h-touch w-full resize-none rounded-xl border border-line bg-canvas-raised px-3 py-2 text-base text-ink outline-none placeholder:text-ink-subtle focus:border-primary"
+              className="min-h-touch w-full resize-none rounded-xl border border-line bg-canvas-raised px-3 py-2 text-base text-ink outline-none placeholder:text-ink-muted focus:border-primary"
             />
+
+            <p
+              data-testid="modifier-note-counter"
+              className="font-mono text-[10px] uppercase tracking-widest text-ink-subtle"
+            >
+              {sanitizeKitchenNote(note).length}/{MAX_NOTE_LENGTH} characters · control characters
+              stripped
+            </p>
           </div>
         </div>
 

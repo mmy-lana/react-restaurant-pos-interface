@@ -124,6 +124,70 @@ async function run({ browser, baseUrl }) {
     false,
   );
 
+  /* ------------------------------------------------------ A11Y-01 roving nav */
+  const roving = await page.evaluate(() => {
+    const group = document.querySelector('[data-testid="modifier-group-grp-cheese"]');
+    const options = Array.from(group.querySelectorAll('button[data-modifier-option]'));
+    return {
+      tabIndexes: options.map((option) => option.getAttribute('tabindex')),
+      selectedCount: options.filter((option) => option.getAttribute('data-selected') === 'true').length,
+    };
+  });
+  runner.checkEqual(
+    'a modifier group exposes a single tab stop',
+    roving.tabIndexes.filter((value) => value === '0').length,
+    1,
+  );
+
+  // Cook temperature is the seeded single-choice group: arrow keys must both
+  // move focus and select, the way a radio group behaves.
+  await page.locator('[data-testid="modifier-option-opt-temp-medium"]').focus();
+  await page.keyboard.press('ArrowDown');
+  await page.waitForTimeout(150);
+  const afterArrowDown = await page.evaluate(() => ({
+    focused: document.activeElement?.getAttribute('data-testid'),
+    selected: document.activeElement?.getAttribute('data-selected'),
+  }));
+  runner.checkEqual(
+    'ArrowDown moves focus to the next option',
+    afterArrowDown.focused,
+    'modifier-option-opt-temp-medium-well',
+  );
+  runner.checkEqual(
+    'single-choice groups select on arrow navigation',
+    afterArrowDown.selected,
+    'true',
+  );
+
+  await page.keyboard.press('ArrowDown');
+  await page.waitForTimeout(150);
+  runner.checkEqual(
+    'ArrowDown wraps within the group',
+    await page.evaluate(() => document.activeElement?.getAttribute('data-testid')),
+    'modifier-option-opt-temp-well',
+  );
+
+  await page.keyboard.press('Home');
+  await page.waitForTimeout(150);
+  runner.checkEqual(
+    'Home jumps to the first option and selects it',
+    await page.evaluate(() => document.activeElement?.getAttribute('data-selected')),
+    'true',
+  );
+  runner.checkEqual(
+    'Home returns focus to the first option',
+    await page.evaluate(() => document.activeElement?.getAttribute('data-testid')),
+    'modifier-option-opt-temp-medium',
+  );
+
+  const multiRoving = await page.evaluate(() => {
+    const group = document.querySelector('[data-testid="modifier-group-grp-toppings"]');
+    const options = Array.from(group.querySelectorAll('button[data-modifier-option]'));
+    return options.filter((option) => option.getAttribute('tabindex') === '0').length;
+  });
+  runner.checkEqual('multi-choice groups keep exactly one tab stop', multiRoving, 1);
+
+  await page.locator('[data-testid="modifier-option-opt-cheese-american"]').tap();
   await page.locator('[data-testid="modifier-option-opt-top-bacon"]').tap();
   await page.locator('[data-testid="modifier-option-opt-top-avocado"]').tap();
   runner.checkEqual(
@@ -200,6 +264,34 @@ async function run({ browser, baseUrl }) {
     ticketAfterModifiers.total,
     ticketAfterModifiers.subtotal + ticketAfterModifiers.tax,
   );
+  // Focus must survive the re-render a reducer dispatch causes, otherwise a
+  // cashier cannot type a note at all.
+  await page.locator('[data-testid="product-customize-menu-smash-classic"]').tap();
+  await page.waitForSelector('[data-testid="modifier-modal"]');
+  await page.locator('[data-testid="modifier-option-opt-top-onion"]').tap();
+  await page.locator('[data-testid="modifier-note"]').click();
+  await page.keyboard.type('no pickle');
+  await page.waitForTimeout(150);
+  runner.checkEqual(
+    'the note field keeps focus while typing',
+    await page.evaluate(() => document.activeElement?.getAttribute('data-testid')),
+    'modifier-note',
+  );
+  runner.checkEqual(
+    'typed note text lands in the field',
+    await page.locator('[data-testid="modifier-note"]').inputValue(),
+    'no pickle',
+  );
+  runner.checkEqual(
+    'typing into a field never triggers the register shortcuts',
+    await page.locator('[data-testid="payment-modal"]').count(),
+    0,
+  );
+  await page.locator('[data-testid="modifier-note"]').fill('');
+  await page.locator('[data-testid="modifier-cancel"]').tap();
+  await page.waitForSelector('[data-testid="modifier-modal"]', { state: 'detached' });
+  await page.waitForTimeout(200);
+
   runner.check(
     'modifier summary and note reach the ticket row',
     (await page.locator('[data-testid^="ticket-line-modifiers-"]').first().innerText()).includes('Bacon'),
@@ -219,6 +311,100 @@ async function run({ browser, baseUrl }) {
   });
   runner.checkEqual('identical modifier-free rings merge into one row', mergedRow.count, 1);
   runner.checkEqual('repeat taps increment the merged quantity', mergedRow.quantity, 2);
+
+  /* ------------------------------------------ SEC-03 printer-safe notes */
+  // Stage a note carrying ESC/POS control bytes through the modifier overlay.
+  await page.locator('[data-testid="catalog-search-input"]').fill('build your own salad');
+  await page.waitForTimeout(150);
+  await page.locator('[data-testid="product-tile-menu-garden-salad"]').tap();
+  await page.waitForSelector('[data-testid="modifier-modal"]');
+
+  await page.locator('[data-testid="modifier-option-opt-base-greens"]').tap();
+  await page.locator('[data-testid="modifier-option-opt-dressing-vinaigrette"]').tap();
+
+  await page.locator('[data-testid="modifier-note"]').fill('no onions\u001b\u0008\u0007ALLERGIC  ');
+  runner.check(
+    'the note counter reflects the sanitized length',
+    (await page.locator('[data-testid="modifier-note-counter"]').innerText())
+      .toLowerCase()
+      .includes('/140 characters'),
+    (await page.locator('[data-testid="modifier-note-counter"]').innerText()).trim(),
+  );
+
+  await page.locator('[data-testid="modifier-confirm"]').tap();
+  await page.waitForSelector('[data-testid="modifier-modal"]', { state: 'detached' });
+  await page.waitForTimeout(200);
+
+  const sanitizedNote = await page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll('[data-menu-item-id]'));
+    const salad = rows.find((row) => row.getAttribute('data-menu-item-id') === 'menu-garden-salad');
+    const noteNode = Array.from(salad?.querySelectorAll('p') ?? []).find((node) =>
+      (node.textContent ?? '').toLowerCase().startsWith('note:'),
+    );
+    return noteNode?.textContent ?? '';
+  });
+
+  runner.check(
+    'control characters never reach the ticket note',
+    !/[\u0000-\u001F\u007F]/.test(sanitizedNote),
+    JSON.stringify(sanitizedNote.slice(0, 60)),
+  );
+  runner.check(
+    'the readable part of the note survives sanitization',
+    sanitizedNote.toUpperCase().includes('ALLERGIC'),
+    JSON.stringify(sanitizedNote.slice(0, 60)),
+  );
+  // Re-open the row and try to push an over-long note through the edit path.
+  const saladRow = page.locator('[data-menu-item-id="menu-garden-salad"]');
+  await saladRow.locator('[data-testid^="ticket-line-edit-"]').tap();
+  await page.waitForSelector('[data-testid="modifier-modal"]');
+  await page.locator('[data-testid="modifier-note"]').fill('A'.repeat(200));
+  await page.locator('[data-testid="modifier-confirm"]').tap();
+  await page.waitForSelector('[data-testid="modifier-modal"]', { state: 'detached' });
+  await page.waitForTimeout(200);
+
+  const clampedNote = await page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll('[data-menu-item-id]'));
+    const salad = rows.find((row) => row.getAttribute('data-menu-item-id') === 'menu-garden-salad');
+    const noteNode = Array.from(salad?.querySelectorAll('p') ?? []).find((node) =>
+      (node.textContent ?? '').toLowerCase().startsWith('note:'),
+    );
+    return (noteNode?.textContent ?? '').replace(/^note:\s*/i, '');
+  });
+
+  runner.check(
+    'the sanitizer clamps over-long notes',
+    clampedNote.length > 0 && clampedNote.length <= 140,
+    `length=${clampedNote.length}`,
+  );
+
+  /* ------------------------------- DATA-04 occupied table confirmation */
+  await page.locator('[data-testid="ticket-table-button"]').tap();
+  await page.waitForSelector('[data-testid="table-drawer"]');
+
+  await page.locator('[data-testid="table-card-T03"]').tap(); // seeded as reserved
+  await page.waitForSelector('[data-testid="table-confirm-modal"]');
+  runner.check(
+    'a reserved table asks before reassignment',
+    (await page.locator('[data-testid="table-confirm-modal"] h2').innerText()).includes('T03'),
+    (await page.locator('[data-testid="table-confirm-modal"] h2').innerText()).trim(),
+  );
+  await page.locator('[data-testid="table-confirm-cancel"]').tap();
+  await page.waitForSelector('[data-testid="table-confirm-modal"]', { state: 'detached' });
+  await page.waitForTimeout(250);
+  runner.check(
+    'declining leaves the ticket unassigned',
+    (await page.locator('[data-testid="ticket-table-button"]').innerText()).toLowerCase().includes('assign table'),
+  );
+
+  await page.locator('[data-testid="table-card-T03"]').tap();
+  await page.waitForSelector('[data-testid="table-confirm-modal"]');
+  await page.locator('[data-testid="table-confirm-accept"]').tap();
+  await page.waitForSelector('[data-testid="table-drawer"]', { state: 'detached' });
+  runner.check(
+    'confirming the override seats the table',
+    (await page.locator('[data-testid="ticket-table-button"]').innerText()).includes('T03'),
+  );
 
   /* ------------------------------------------------------- dining + table */
   await page.locator('[data-testid="ticket-dining-takeout"]').tap();
@@ -411,6 +597,8 @@ async function run({ browser, baseUrl }) {
   );
 
   /* -------------------------------------------------------- parking flow */
+  await page.locator('[data-testid="catalog-search-input"]').fill('');
+  await page.waitForTimeout(200);
   await page.locator('[data-testid="product-tile-menu-sparkling-water"]').tap();
   await page.waitForFunction(
     () => Number(document.querySelector('[data-testid="active-ticket"]').getAttribute('data-item-count')) === 1,

@@ -34,6 +34,7 @@ import {
 import { seedDatabase } from '@/db/seed';
 import { APP_TITLE, DEFAULT_TAX_RATE_PERCENT, STORE_IDENTIFIER } from '@/db/seedData';
 import { AudioFeedback } from '@/utils/audioFeedback';
+import { sanitizePrinterSafeText } from '@/utils/sanitize';
 import { FinancialEngine } from '@/utils/financial';
 import {
   createInitialModifierDraft,
@@ -413,7 +414,7 @@ export function posReducer(state: ActivePOSState, action: POSAction): ActivePOSS
             {
               ...editedRow,
               selectedModifiers: modifiers.map((modifier) => ({ ...modifier })),
-              specialInstructions: note,
+              specialInstructions: sanitizePrinterSafeText(note),
             },
             quantity,
             editedRow.discountInCents,
@@ -428,7 +429,7 @@ export function posReducer(state: ActivePOSState, action: POSAction): ActivePOSS
             taxRatePercent: menuItem.taxRatePercent,
             modifiers,
             quantity,
-            specialInstructions: note,
+            specialInstructions: sanitizePrinterSafeText(note),
           }),
         );
       }
@@ -528,7 +529,7 @@ export function posReducer(state: ActivePOSState, action: POSAction): ActivePOSS
     }
 
     case 'SET_ORDER_NOTE': {
-      state.currentOrder.note = action.payload;
+      state.currentOrder.note = sanitizePrinterSafeText(action.payload);
       state.currentOrder.updatedAt = new Date().toISOString();
       return state;
     }
@@ -566,6 +567,11 @@ export function posReducer(state: ActivePOSState, action: POSAction): ActivePOSS
 
     case 'RESTORE_ORDER': {
       const restored = structuredClone(action.payload) as unknown as OrderRecord;
+      restored.lineItems = restored.lineItems.map((lineItem) => ({
+        ...lineItem,
+        specialInstructions: sanitizePrinterSafeText(lineItem.specialInstructions),
+      }));
+      restored.note = restored.note ? sanitizePrinterSafeText(restored.note) : restored.note;
       state.currentOrder = { ...restored, summary: createEmptyOrderSummary() };
       refreshSummary(state.currentOrder);
       state.activeModal = 'none';
@@ -1095,7 +1101,7 @@ export function POSProvider({ children }: POSProviderProps) {
         dispatch({ type: 'SET_GUEST_COUNT', payload: guestCount });
         AudioFeedback.playTick();
       },
-      setOrderNote: (note) => dispatch({ type: 'SET_ORDER_NOTE', payload: note }),
+      setOrderNote: (note) => dispatch({ type: 'SET_ORDER_NOTE', payload: sanitizePrinterSafeText(note) }),
       assignTable: (tableId, label) => {
         dispatch({ type: 'ASSIGN_TABLE', payload: { tableId, label } });
         AudioFeedback.triggerBeep(760, 0.05, 'triangle');

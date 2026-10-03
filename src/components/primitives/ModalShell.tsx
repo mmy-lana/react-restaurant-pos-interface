@@ -60,6 +60,10 @@ export function ModalShell({
   // A dismissal triggered by Enter/Escape also releases the key as a click on
   // whatever sits underneath. Suppress that ghost click for a moment.
   const ghostClickGuardUntilRef = useRef(0);
+  const preventCloseRef = useRef(preventClose);
+  useEffect(() => {
+    preventCloseRef.current = preventClose;
+  }, [preventClose]);
   const titleId = useId();
   const subtitleId = useId();
 
@@ -105,6 +109,15 @@ export function ModalShell({
     return () => document.removeEventListener('click', blockGhostClick, true);
   }, []);
 
+  // The close callback is read through a ref so the focus/scroll-lock effect
+  // below only runs when the dialog opens or closes. Re-running it on every
+  // parent re-render would steal focus back to the first control mid-edit,
+  // which makes typing inside a dialog impossible.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     if (!isOpen) return undefined;
 
@@ -120,7 +133,12 @@ export function ModalShell({
     const handleKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        requestClose();
+        if (preventCloseRef.current) {
+          AudioFeedback.playWarning();
+        } else {
+          AudioFeedback.playTick();
+          onCloseRef.current();
+        }
         return;
       }
 
@@ -155,7 +173,7 @@ export function ModalShell({
       body.style.overflow = previousOverflow;
       previouslyFocusedRef.current?.focus?.({ preventScroll: true });
     };
-  }, [isOpen, requestClose]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 

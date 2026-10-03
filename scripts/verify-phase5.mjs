@@ -393,6 +393,44 @@ async function run({ browser, baseUrl }) {
     parkedRowNumber,
   );
 
+  /* ------------------------------------------------------- operator guide */
+  banner('Operator guide');
+
+  const helpButton = page.locator('[data-testid="header-help-button"]');
+  runner.check(
+    'help control meets the 48px touch minimum',
+    (await helpButton.boundingBox()).height >= 48,
+    `${Math.round((await helpButton.boundingBox()).height)}px`,
+  );
+
+  await helpButton.tap();
+  await page.waitForSelector('[data-testid="help-guide-modal"]');
+
+  const guideSections = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('[data-testid^="help-section-"]')).map((node) =>
+      node.getAttribute('data-testid').replace('help-section-', ''),
+    ),
+  );
+  runner.checkEqual('guide renders every documented section', guideSections.length, 5);
+  runner.check(
+    'guide sections cover shortcuts, scanning, tenders, offline and availability',
+    ['shortcuts', 'scanner', 'tenders', 'offline', 'availability'].every((id) => guideSections.includes(id)),
+    guideSections.join(','),
+  );
+  runner.check(
+    'guide documents the Enter shortcut',
+    (await page.locator('[data-testid="help-section-shortcuts"]').innerText()).toLowerCase().includes('enter'),
+  );
+  runner.check(
+    'guide explains that change is cash only',
+    (await page.locator('[data-testid="help-section-tenders"]').innerText()).toLowerCase().includes('never return change'),
+  );
+
+  await runner.screenshot('phase5-operator-guide');
+  await page.locator('[data-testid="help-guide-close"]').tap();
+  await page.waitForSelector('[data-testid="help-guide-modal"]', { state: 'detached' });
+  runner.check('the guide closes cleanly', (await page.locator('[data-testid="help-guide-modal"]').count()) === 0);
+
   /* ------------------------------------------------ CONC-01 conflict path */
   banner('Optimistic lock conflict');
 
