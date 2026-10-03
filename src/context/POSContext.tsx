@@ -24,8 +24,13 @@ import type {
   SelectedModifier,
   UUID,
 } from '@/types/pos';
-import { db, OptimisticLockError, saveOrderWithOptimisticLock } from '@/db/posDatabase';
-import { applyPaymentToSessionTotals, seedDatabase } from '@/db/seed';
+import {
+  db,
+  OptimisticLockError,
+  saveOrderWithOptimisticLock,
+  type SessionPaymentIntent,
+} from '@/db/posDatabase';
+import { seedDatabase } from '@/db/seed';
 import { APP_TITLE, DEFAULT_TAX_RATE_PERCENT, STORE_IDENTIFIER } from '@/db/seedData';
 import { AudioFeedback } from '@/utils/audioFeedback';
 import { FinancialEngine } from '@/utils/financial';
@@ -776,6 +781,7 @@ export function POSProvider({ children }: POSProviderProps) {
       snapshot: OrderRecord,
       overrides: Partial<Pick<OrderRecord, 'status' | 'completedAt' | 'summary' | 'payments'>>,
       tableIntent?: { tableId: UUID; release: boolean },
+      sessionIntent?: SessionPaymentIntent,
     ): Promise<boolean> => {
       const base = structuredClone(snapshot) as OrderRecord;
       const merged: OrderRecord = {
@@ -787,7 +793,7 @@ export function POSProvider({ children }: POSProviderProps) {
       dispatch({ type: 'SET_MUTATION_STATE', payload: { isMutating: true, error: null } });
 
       try {
-        await saveOrderWithOptimisticLock(db, merged, tableIntent);
+        await saveOrderWithOptimisticLock(db, merged, tableIntent, sessionIntent);
         dispatch({
           type: 'ORDER_COMMITTED',
           payload: { version: base.version + 1, updatedAt: new Date().toISOString() },
@@ -864,6 +870,16 @@ export function POSProvider({ children }: POSProviderProps) {
 
       dispatch({ type: 'PROCESS_PAYMENT', payload: payment });
 
+      // The ticket, its table and the shift drawer are written in one atomic
+      // transaction: a settled order can never exist without its drawer entry.
+      const sessionIntent: SessionPaymentIntent | undefined = state.activeSession
+        ? {
+            sessionId: state.activeSession.id,
+            method: payment.method,
+            amountInCents: payment.amountInCents,
+          }
+        : undefined;
+
       const committed = await commitOrder(
         order,
         {
@@ -872,19 +888,10 @@ export function POSProvider({ children }: POSProviderProps) {
           summary,
           ...(isFullySettled ? { completedAt: new Date().toISOString() } : {}),
         },
-        order.tableId
-          ? { tableId: order.tableId, release: isFullySettled }
-          : undefined,
+        order.tableId ? { tableId: order.tableId, release: isFullySettled } : undefined,
+        sessionIntent,
       );
       if (!committed) return;
-
-      if (state.activeSession) {
-        try {
-          await applyPaymentToSessionTotals(db, state.activeSession.id, payment.method, payment.amountInCents);
-        } catch (error) {
-          dispatch({ type: 'SET_MUTATION_STATE', payload: { isMutating: false, error: toErrorMessage(error) } });
-        }
-      }
 
       if (isFullySettled) {
         dispatch({ type: 'CLOSE_MODAL' });

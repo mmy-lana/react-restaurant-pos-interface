@@ -1,4 +1,4 @@
-import type { CashierSessionRecord, PaymentMethod } from '@/types/pos';
+import type { CashierSessionRecord } from '@/types/pos';
 import type { POSDatabase } from '@/db/posDatabase';
 import {
   SEED_CATEGORIES,
@@ -8,40 +8,65 @@ import {
 } from '@/db/seedData';
 
 export interface SeedReport {
+  /** Rows actually written by this call (0 when the database was preserved). */
   readonly categoriesWritten: number;
   readonly menuItemsWritten: number;
   readonly tablesWritten: number;
   readonly session: CashierSessionRecord;
   readonly alreadySeeded: boolean;
+  /** Stores that hold data but are missing rows, surfaced for diagnostics. */
+  readonly incompleteStores: readonly string[];
+}
+
+export interface SeedInventory {
+  readonly categories: number;
+  readonly menuItems: number;
+  readonly tables: number;
+}
+
+/** Reads the current catalog population without mutating anything. */
+export async function readSeedInventory(posDb: POSDatabase): Promise<SeedInventory> {
+  const [categories, menuItems, tables] = await Promise.all([
+    posDb.categories.count(),
+    posDb.menuItems.count(),
+    posDb.diningTables.count(),
+  ]);
+
+  return { categories, menuItems, tables };
 }
 
 /**
- * Idempotently installs the starter catalog, floor plan and opening shift.
+ * Installs the starter catalog, floor plan and opening shift — but only into a
+ * completely empty register.
  *
- * Rows already present keep their live values (`put` on a stable primary key is
- * an in-place upsert), so a re-seed never duplicates or drops cashier work.
+ * Re-seeding a populated database used to overwrite live catalog edits (a
+ * re-priced burger, an 86'd item, a renamed category) on every boot. Existing
+ * records are now preserved verbatim and reported as `alreadySeeded`.
  */
 export async function seedDatabase(posDb: POSDatabase): Promise<SeedReport> {
-  const existingCategoryCount = await posDb.categories.count();
-  const existingMenuItemCount = await posDb.menuItems.count();
-  const existingTableCount = await posDb.diningTables.count();
+  const inventory = await readSeedInventory(posDb);
+  const storesAreEmpty = inventory.categories === 0 && inventory.menuItems === 0 && inventory.tables === 0;
 
-  await posDb.categories.bulkPut(SEED_CATEGORIES.map((row) => ({ ...row })));
-  await posDb.menuItems.bulkPut(SEED_MENU_ITEMS.map((row) => structuredClone(row)));
-  await posDb.diningTables.bulkPut(SEED_TABLES.map((row) => ({ ...row })));
+  if (storesAreEmpty) {
+    await posDb.categories.bulkPut(SEED_CATEGORIES.map((row) => ({ ...row })));
+    await posDb.menuItems.bulkPut(SEED_MENU_ITEMS.map((row) => structuredClone(row)));
+    await posDb.diningTables.bulkPut(SEED_TABLES.map((row) => ({ ...row })));
+  }
 
   const session = await ensureCashierSession(posDb);
-  const alreadySeeded =
-    existingCategoryCount >= SEED_CATEGORIES.length &&
-    existingMenuItemCount >= SEED_MENU_ITEMS.length &&
-    existingTableCount >= SEED_TABLES.length;
+
+  const incompleteStores: string[] = [];
+  if (inventory.categories === 0) incompleteStores.push('categories');
+  if (inventory.menuItems === 0) incompleteStores.push('menuItems');
+  if (inventory.tables === 0) incompleteStores.push('tables');
 
   return {
-    categoriesWritten: SEED_CATEGORIES.length,
-    menuItemsWritten: SEED_MENU_ITEMS.length,
-    tablesWritten: SEED_TABLES.length,
+    categoriesWritten: storesAreEmpty ? SEED_CATEGORIES.length : 0,
+    menuItemsWritten: storesAreEmpty ? SEED_MENU_ITEMS.length : 0,
+    tablesWritten: storesAreEmpty ? SEED_TABLES.length : 0,
     session,
-    alreadySeeded,
+    alreadySeeded: !storesAreEmpty,
+    incompleteStores,
   };
 }
 
@@ -61,52 +86,4 @@ export async function ensureCashierSession(posDb: POSDatabase): Promise<CashierS
 
   await posDb.sessions.put(seedSession);
   return seedSession;
-}
-
-/**
- * Accumulates a settled payment into the running shift drawer totals.
- *
- * Called inside the same transaction that finalizes the order so the drawer
- * never drifts away from the settled tickets.
- */
-export async function applyPaymentToSessionTotals(
-  posDb: POSDatabase,
-  sessionId: string,
-  method: PaymentMethod,
-  amountInCents: number,
-): Promise<void> {
-  const session = await posDb.sessions.get(sessionId);
-  if (!session) return;
-
-  const amount = Math.max(0, amountInCents);
-
-  switch (method) {
-    case 'cash':
-      await posDb.sessions.put({
-        ...session,
-        totalCashReceivedInCents: session.totalCashReceivedInCents + amount,
-      });
-      break;
-    case 'credit_card':
-    case 'debit_card':
-      await posDb.sessions.put({
-        ...session,
-        totalCardReceivedInCents: session.totalCardReceivedInCents + amount,
-      });
-      break;
-    case 'gift_card':
-      await posDb.sessions.put({
-        ...session,
-        totalGiftCardReceivedInCents: session.totalGiftCardReceivedInCents + amount,
-      });
-      break;
-    case 'digital_wallet':
-      await posDb.sessions.put({
-        ...session,
-        totalDigitalWalletReceivedInCents: session.totalDigitalWalletReceivedInCents + amount,
-      });
-      break;
-    default:
-      break;
-  }
 }

@@ -307,6 +307,81 @@ async function run({ browser, baseUrl }) {
     parkedRowNumber,
   );
 
+  /* ------------------------------------------------ CONC-01 conflict path */
+  banner('Optimistic lock conflict');
+
+  // Another terminal advances the same row behind this one's back.
+  const conflictSetup = await page.evaluate(async (orderNumber) => {
+    const request = indexedDB.open('RestaurantPOS_DB');
+    const database = await new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+
+    const order = await new Promise((resolve, reject) => {
+      const tx = database.transaction('orders', 'readonly');
+      const req = tx.objectStore('orders').getAll();
+      req.onsuccess = () => resolve(req.result.find((row) => row.orderNumber === orderNumber));
+      req.onerror = () => reject(req.error);
+    });
+
+    await new Promise((resolve, reject) => {
+      const tx = database.transaction('orders', 'readwrite');
+      tx.objectStore('orders').put({ ...order, version: order.version + 5 });
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+
+    database.close();
+    return { id: order.id, version: order.version };
+  }, parkedRowNumber);
+
+  await page.locator('[data-testid="ticket-park-button"]').tap();
+  await page.waitForSelector('[data-testid="persistence-error"]', { timeout: 15000 });
+
+  const conflictBanner = await page.locator('[data-testid="persistence-error"]').innerText();
+  runner.check(
+    'a stale write is refused with the concurrency error',
+    conflictBanner.toLowerCase().includes('concurrency_error'),
+    conflictBanner.trim().slice(0, 80),
+  );
+
+  const afterConflict = await page.evaluate(async (orderId) => {
+    const request = indexedDB.open('RestaurantPOS_DB');
+    const database = await new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+
+    const order = await new Promise((resolve, reject) => {
+      const tx = database.transaction('orders', 'readonly');
+      const req = tx.objectStore('orders').get(orderId);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+
+    database.close();
+    return { status: order.status, version: order.version };
+  }, conflictSetup.id);
+
+  runner.checkEqual(
+    'the losing write never lands in IndexedDB',
+    afterConflict.version,
+    conflictSetup.version + 5,
+  );
+  runner.checkEqual(
+    'the authoritative status is untouched',
+    afterConflict.status,
+    'parked',
+  );
+  runner.check(
+    'the register reloads the authoritative row after a conflict',
+    Number(await page.locator('[data-testid="active-ticket"]').getAttribute('data-item-count')) === 3,
+    await page.locator('[data-testid="active-ticket"]').getAttribute('data-item-count'),
+  );
+
+  await page.locator('[data-testid="error-dismiss"]').tap();
+
   /* --------------------------------------------------- settlement flow */
   banner('Settlement persistence');
 
@@ -335,7 +410,16 @@ async function run({ browser, baseUrl }) {
   runner.check('first tender is archived in the split history', true);
 
   await page.locator('[data-testid="payment-method-credit_card"]').tap();
-  await page.locator('[data-testid="quick-cash-option-0"]').tap();
+  runner.checkEqual(
+    'quick cash is disabled for non-cash tenders',
+    await page.locator('[data-testid="quick-cash-option-0"]').isDisabled(),
+    true,
+  );
+  runner.checkEqual(
+    'non-cash tender never returns change',
+    await page.locator('[data-testid="payment-change"]').getAttribute('data-amount-cents'),
+    '0',
+  );
   await page.locator('[data-testid="payment-settle"]').tap();
   await page.waitForSelector('[data-testid="ticket-empty"]', { timeout: 20000 });
 
@@ -370,6 +454,7 @@ async function run({ browser, baseUrl }) {
         methods: order.payments.map((payment) => payment.method),
         amounts: order.payments.map((payment) => payment.amountInCents),
         change: order.payments.map((payment) => payment.changeReturnedInCents),
+        tenders: order.payments.map((payment) => payment.tenderAmountInCents),
         references: order.payments.map((payment) => payment.transactionReference ?? null),
       })),
       t02: tables.find((table) => table.label === 'T02')?.status,
@@ -392,6 +477,15 @@ async function run({ browser, baseUrl }) {
         payment.references[payment.methods.indexOf('credit_card')] !== null &&
         !payment.methods.includes('cash'),
     ) || persisted.payments.some((payment) => payment.methods.length >= 2),
+    JSON.stringify(persisted.payments),
+  );
+  runner.check(
+    'non-cash records never carry change',
+    persisted.payments.every((payment) =>
+      payment.methods.every(
+        (method, index) => method === 'cash' || (payment.change[index] === 0 && payment.tenders[index] === payment.amounts[index]),
+      ),
+    ),
     JSON.stringify(persisted.payments),
   );
   runner.checkEqual('seating then settling releases the table', persisted.t02, 'available');

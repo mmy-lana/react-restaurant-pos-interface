@@ -1,10 +1,12 @@
 import Dexie, { type Table } from 'dexie';
 import type {
+  Cents,
   CashierSessionRecord,
   DiningTableRecord,
   MenuItemRecord,
   OrderCategoryRecord,
   OrderRecord,
+  PaymentMethod,
   UUID,
 } from '@/types/pos';
 
@@ -20,6 +22,29 @@ export interface TableUpdateIntent {
   readonly tableId: UUID;
   /** `true` frees the table, `false` marks it occupied by the target order. */
   readonly release: boolean;
+}
+
+/**
+ * Shift-drawer increment applied inside the order-finalization transaction so a
+ * settled ticket and its drawer totals can never diverge.
+ */
+export interface SessionPaymentIntent {
+  readonly sessionId: string;
+  readonly method: PaymentMethod;
+  readonly amountInCents: Cents;
+}
+
+/**
+ * Atomically reserved daily ticket sequence.
+ *
+ * The row is written inside the same read-write transaction that mints the
+ * number, so two terminals booting at the same instant can never mint the same
+ * `POS-YYYYMMDD-XXXX`, even before either order is persisted.
+ */
+export interface OrderSequenceRecord {
+  readonly key: string;
+  readonly value: number;
+  readonly updatedAt: string;
 }
 
 /** Thrown when an optimistic write loses the race against another terminal. */
@@ -52,6 +77,8 @@ export class POSDatabase extends Dexie {
    */
   diningTables!: Table<DiningTableRecord, string>;
   sessions!: Table<CashierSessionRecord, string>;
+  /** Daily order-number reservations, keyed by `POS-YYYYMMDD`. */
+  counters!: Table<OrderSequenceRecord, string>;
 
   public constructor(name = 'RestaurantPOS_DB') {
     super(name);
@@ -64,6 +91,17 @@ export class POSDatabase extends Dexie {
       sessions: 'id, cashierId, openedAt, closedAt',
     });
 
+    // v2 adds the atomic sequence reservation store; every other store keeps its
+    // blueprint indexes untouched.
+    this.version(2).stores({
+      menuItems: 'id, sku, categoryId, isAvailable',
+      categories: 'id, sortOrder',
+      orders: 'id, &orderNumber, status, diningOption, tableId, version, createdAt, completedAt',
+      tables: 'id, status, section, version',
+      sessions: 'id, cashierId, openedAt, closedAt',
+      counters: 'key',
+    });
+
     // Dexie only auto-binds properties whose name matches an object store, so the
     // floor plan store is bound explicitly to its `tables` store name.
     this.diningTables = this.table<DiningTableRecord, string>('tables');
@@ -73,13 +111,43 @@ export class POSDatabase extends Dexie {
 /** Singleton database instance with zero React/Context imports. */
 export const db = new POSDatabase();
 
+/** Maps a tender method onto the shift-drawer bucket it accumulates into. */
+function applySessionPayment(
+  session: CashierSessionRecord,
+  intent: SessionPaymentIntent,
+): CashierSessionRecord {
+  const amount = Math.max(0, intent.amountInCents);
+
+  switch (intent.method) {
+    case 'cash':
+      return { ...session, totalCashReceivedInCents: session.totalCashReceivedInCents + amount };
+    case 'credit_card':
+    case 'debit_card':
+      return { ...session, totalCardReceivedInCents: session.totalCardReceivedInCents + amount };
+    case 'gift_card':
+      return { ...session, totalGiftCardReceivedInCents: session.totalGiftCardReceivedInCents + amount };
+    case 'digital_wallet':
+      return {
+        ...session,
+        totalDigitalWalletReceivedInCents: session.totalDigitalWalletReceivedInCents + amount,
+      };
+    default:
+      return session;
+  }
+}
+
 /**
- * Persists an order with an optimistic version check and, optionally, syncs the
- * linked table occupancy inside the very same IndexedDB transaction.
+ * Persists an order with an optimistic version check while atomically syncing
+ * the linked table occupancy and, when provided, the shift-drawer totals.
  *
- * The stored record is written with `version + 1`; the caller must adopt the
- * incremented version (returned through the mutation of `targetOrder` by the
- * caller-side reducer, or by re-reading the row) before its next write.
+ * All three stores are written inside one IndexedDB read-write transaction, so
+ * a settled ticket, its released table and the drawer increment either all land
+ * or none do — there is no window where the drawer drifts away from the ledger.
+ * Dexie serialises overlapping read-write transactions across tabs of the same
+ * origin, so the read-modify-write of the session row is safe here.
+ *
+ * The stored order is written with `version + 1`; the caller must adopt the
+ * incremented version before its next write.
  *
  * @throws {OptimisticLockError} when another writer already advanced the row.
  */
@@ -87,31 +155,43 @@ export async function saveOrderWithOptimisticLock(
   posDb: POSDatabase,
   targetOrder: OrderRecord,
   tableUpdate?: TableUpdateIntent,
+  sessionPayment?: SessionPaymentIntent,
 ): Promise<void> {
-  await posDb.transaction('rw', posDb.orders, posDb.diningTables, async () => {
-    const existing = await posDb.orders.get(targetOrder.id);
-    if (existing && existing.version !== targetOrder.version) {
-      throw new OptimisticLockError(targetOrder.id, targetOrder.version, existing.version);
-    }
-
-    await posDb.orders.put({
-      ...targetOrder,
-      version: targetOrder.version + 1,
-      updatedAt: new Date().toISOString(),
-    });
-
-    if (tableUpdate) {
-      const table = await posDb.diningTables.get(tableUpdate.tableId);
-      if (table) {
-        await posDb.diningTables.put({
-          ...table,
-          status: tableUpdate.release ? 'available' : 'occupied',
-          ...(tableUpdate.release ? {} : { activeOrderId: targetOrder.id }),
-          version: table.version + 1,
-        });
+  await posDb.transaction(
+    'rw',
+    [posDb.orders, posDb.diningTables, posDb.sessions],
+    async () => {
+      const existing = await posDb.orders.get(targetOrder.id);
+      if (existing && existing.version !== targetOrder.version) {
+        throw new OptimisticLockError(targetOrder.id, targetOrder.version, existing.version);
       }
-    }
-  });
+
+      await posDb.orders.put({
+        ...targetOrder,
+        version: targetOrder.version + 1,
+        updatedAt: new Date().toISOString(),
+      });
+
+      if (tableUpdate) {
+        const table = await posDb.diningTables.get(tableUpdate.tableId);
+        if (table) {
+          await posDb.diningTables.put({
+            ...table,
+            status: tableUpdate.release ? 'available' : 'occupied',
+            ...(tableUpdate.release ? {} : { activeOrderId: targetOrder.id }),
+            version: table.version + 1,
+          });
+        }
+      }
+
+      if (sessionPayment) {
+        const session = await posDb.sessions.get(sessionPayment.sessionId);
+        if (session) {
+          await posDb.sessions.put(applySessionPayment(session, sessionPayment));
+        }
+      }
+    },
+  );
 }
 
 /** Explicitly opens the database; safe to call repeatedly (Dexie memoizes). */
@@ -135,7 +215,7 @@ export function closePOSDatabase(posDb: POSDatabase = db): void {
 export async function resetPOSDatabase(posDb: POSDatabase = db): Promise<void> {
   await posDb.transaction(
     'rw',
-    [posDb.menuItems, posDb.categories, posDb.orders, posDb.diningTables, posDb.sessions],
+    [posDb.menuItems, posDb.categories, posDb.orders, posDb.diningTables, posDb.sessions, posDb.counters],
     async () => {
       await Promise.all([
         posDb.menuItems.clear(),
@@ -143,6 +223,7 @@ export async function resetPOSDatabase(posDb: POSDatabase = db): Promise<void> {
         posDb.orders.clear(),
         posDb.diningTables.clear(),
         posDb.sessions.clear(),
+        posDb.counters.clear(),
       ]);
     },
   );

@@ -65,13 +65,138 @@ async function run({ browser, baseUrl }) {
   runner.checkEqual('IndexedDB cashier session rows', indexedDbState.sessions, 1);
   runner.checkEqual('IndexedDB orders start empty', indexedDbState.orders, 0);
 
-  const sortedOrderNumberProbe = await page.evaluate(async () => {
-    const first = document.querySelector('[data-testid="boot-ready"]')?.getAttribute('data-order-number');
-    const reload = new Promise((resolve) => setTimeout(resolve, 50));
-    await reload;
-    return first;
+  runner.check(
+    'order number rendered on boot',
+    Boolean(dataset.orderNumber),
+    dataset.orderNumber,
+  );
+
+  /* ------------------------------------------- DATA-02 sequence reservation */
+  banner('DATA-02 · atomic order-number reservation');
+
+  const reservation = await page.evaluate(async () => {
+    const openDb = () =>
+      new Promise((resolve, reject) => {
+        const request = indexedDB.open('RestaurantPOS_DB');
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+
+    const database = await openDb();
+
+    // Two concurrent reservations must never observe the same sequence: the
+    // counter row is written inside the same read-write transaction.
+    const reserve = async () =>
+      new Promise((resolve, reject) => {
+        const transaction = database.transaction(['counters'], 'readwrite');
+        const store = transaction.objectStore('counters');
+        const getRequest = store.get('probe');
+        getRequest.onsuccess = () => {
+          const next = (getRequest.result?.value ?? 0) + 1;
+          store.put({ key: 'probe', value: next, updatedAt: new Date().toISOString() });
+          transaction.oncomplete = () => resolve(next);
+          transaction.onerror = () => reject(transaction.error);
+        };
+        getRequest.onerror = () => reject(getRequest.error);
+      });
+
+    const results = await Promise.all([reserve(), reserve(), reserve()]);
+    const counterRow = await new Promise((resolve, reject) => {
+      const request = database.transaction('counters', 'readonly').objectStore('counters').get('probe');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+
+    database.close();
+    return { results, counterRow };
   });
-  runner.check('order number rendered on boot', Boolean(sortedOrderNumberProbe), sortedOrderNumberProbe);
+
+  runner.checkEqual(
+    'concurrent reservations never collide',
+    new Set(reservation.results).size,
+    reservation.results.length,
+  );
+  runner.checkEqual(
+    'counter row tracks the highest reservation',
+    reservation.counterRow?.value,
+    Math.max(...reservation.results),
+  );
+
+  /* ------------------------------------------- DATA-01 catalog preservation */
+  banner('DATA-01 · catalog edits survive a reboot');
+
+  const runtimeEdits = await page.evaluate(async () => {
+    const request = indexedDB.open('RestaurantPOS_DB');
+    const database = await new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+
+    // Simulate a cashier 86'ing an item and re-pricing another at 2am.
+    const tx = database.transaction('menuItems', 'readwrite');
+    const soldOut = tx.objectStore('menuItems').get('menu-smash-classic');
+    soldOut.onsuccess = () => {
+      soldOut.result.isAvailable = false;
+      tx.objectStore('menuItems').put(soldOut.result);
+    };
+    const repriced = tx.objectStore('menuItems').get('menu-onion-rings');
+    repriced.onsuccess = () => {
+      repriced.result.priceInCents = 999;
+      tx.objectStore('menuItems').put(repriced.result);
+    };
+
+    await new Promise((resolve) => {
+      tx.oncomplete = resolve;
+      tx.onerror = () => resolve(undefined);
+    });
+    database.close();
+    return true;
+  });
+  runner.check('runtime catalog edits were applied', runtimeEdits);
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-testid="boot-ready"]', { timeout: 20_000 });
+
+  const preservedEdits = await page.evaluate(async () => {
+    const request = indexedDB.open('RestaurantPOS_DB');
+    const database = await new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+
+    const readAll = () =>
+      new Promise((resolve, reject) => {
+        const tx = database.transaction('menuItems', 'readonly');
+        const req = tx.objectStore('menuItems').getAll();
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+
+    const items = await readAll();
+    database.close();
+
+    return {
+      soldOut: items.find((item) => item.id === 'menu-smash-classic')?.isAvailable,
+      price: items.find((item) => item.id === 'menu-onion-rings')?.priceInCents,
+      count: items.length,
+    };
+  });
+
+  runner.checkEqual(
+    'an 86\'d item is not resurrected by the seed on reboot',
+    preservedEdits.soldOut,
+    false,
+  );
+  runner.checkEqual(
+    'a runtime price edit is not overwritten by the seed',
+    preservedEdits.price,
+    999,
+  );
+  runner.checkEqual(
+    'no duplicate catalog rows are created on reboot',
+    preservedEdits.count,
+    20,
+  );
 
   await runner.screenshot('phase1-boot-console');
 

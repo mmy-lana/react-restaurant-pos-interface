@@ -8,7 +8,12 @@ import { PriceDisplay } from '@/components/primitives/PriceDisplay';
 import { TouchButton } from '@/components/primitives/TouchButton';
 import type { OrderSummary, PaymentMethod, PaymentRecord, UUID } from '@/types/pos';
 import { cn } from '@/utils/cn';
-import { FinancialEngine, formatCents, parseMoneyInputToCents } from '@/utils/financial';
+import {
+  FinancialEngine,
+  formatCents,
+  formatCentsPlain,
+  parseMoneyInputToCents,
+} from '@/utils/financial';
 import { AudioFeedback } from '@/utils/audioFeedback';
 
 export interface PaymentCheckoutModalProps {
@@ -52,6 +57,14 @@ const METHOD_REQUIRES_REFERENCE: Readonly<Record<PaymentMethod, boolean>> = {
   digital_wallet: true,
 };
 
+const METHOD_LABEL: Readonly<Record<PaymentMethod, string>> = {
+  cash: 'Cash',
+  credit_card: 'Credit card',
+  debit_card: 'Debit card',
+  gift_card: 'Gift card',
+  digital_wallet: 'Wallet',
+};
+
 export function PaymentCheckoutModal({
   isOpen,
   orderId,
@@ -71,12 +84,30 @@ export function PaymentCheckoutModal({
     [balanceInCents],
   );
 
-  const tenderAmountInCents = tenderInput.trim().length > 0
-    ? parseMoneyInputToCents(tenderInput)
-    : balanceInCents;
-  const appliedAmountInCents = Math.min(tenderAmountInCents, balanceInCents);
-  const changeInCents = Math.max(0, tenderAmountInCents - appliedAmountInCents);
+  const isCashTender = method === 'cash';
+  const hasTypedAmount = tenderInput.trim().length > 0;
+  const parsedAmountInCents = hasTypedAmount ? parseMoneyInputToCents(tenderInput) : 0;
+
+  /**
+   * Cash: the keypad is the money physically handed over, so it may exceed the
+   * balance and yields change. Every other method settles exactly what is owed,
+   * so the keypad is the amount applied toward the balance and change is always
+   * $0.00 — over-tendering at a terminal would just fabricate money.
+   */
+  const tenderAmountInCents = isCashTender
+    ? hasTypedAmount
+      ? parsedAmountInCents
+      : balanceInCents
+    : 0;
+  const appliedAmountInCents = isCashTender
+    ? Math.min(tenderAmountInCents, balanceInCents)
+    : hasTypedAmount
+      ? Math.min(parsedAmountInCents, balanceInCents)
+      : balanceInCents;
+  const changeInCents = isCashTender ? Math.max(0, tenderAmountInCents - appliedAmountInCents) : 0;
   const isPartial = appliedAmountInCents < balanceInCents;
+  const typedAmountExceedsBalance =
+    hasTypedAmount && parsedAmountInCents > balanceInCents && !isCashTender;
 
   const appendDigit = (digit: string): void => {
     AudioFeedback.vibrate(8);
@@ -188,6 +219,7 @@ export function PaymentCheckoutModal({
                   key={entry.value}
                   type="button"
                   onClick={() => {
+                    if (entry.value !== method) setTenderInput('');
                     setMethod(entry.value);
                     AudioFeedback.playTick();
                   }}
@@ -220,13 +252,25 @@ export function PaymentCheckoutModal({
                 setTenderInput((amountInCents / 100).toFixed(2));
                 AudioFeedback.triggerBeep(760, 0.05, 'triangle');
               }}
-              disabled={balanceInCents <= 0}
+              disabled={balanceInCents <= 0 || !isCashTender}
             />
+
+            {!isCashTender && (
+              <p
+                data-testid="payment-non-cash-notice"
+                className="mt-2 rounded-xl border border-line bg-surface px-3 py-2 font-mono text-[10px] uppercase leading-relaxed tracking-widest text-ink-subtle"
+              >
+                {METHOD_LABEL[method].toLowerCase()} settles the exact balance — cash tendering and
+                change are disabled
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <p className="font-mono text-xs uppercase tracking-widest text-ink-muted">Custom amount</p>
+              <p className="font-mono text-xs uppercase tracking-widest text-ink-muted">
+                {isCashTender ? 'Cash tendered' : 'Amount to apply'}
+              </p>
               {isMutating && <Loader2 className="h-4 w-4 animate-spin text-primary" aria-hidden="true" />}
             </div>
 
@@ -234,8 +278,15 @@ export function PaymentCheckoutModal({
               data-testid="payment-numpad-display"
               className="flex min-h-touch items-center justify-end rounded-xl border border-line bg-canvas-raised px-3"
             >
-              <span className="font-mono text-3xl font-bold tabular-nums text-primary">
-                {tenderInput.trim().length > 0 ? `$${tenderInput}` : '—'}
+              <span
+                data-testid="payment-numpad-amount"
+                className="font-mono text-3xl font-bold tabular-nums text-primary"
+              >
+                {hasTypedAmount
+                  ? `$${isCashTender ? tenderInput : formatCentsPlain(appliedAmountInCents)}`
+                  : isCashTender
+                    ? '—'
+                    : `$${formatCentsPlain(balanceInCents)}`}
               </span>
             </div>
 
@@ -249,7 +300,7 @@ export function PaymentCheckoutModal({
           </div>
         </div>
 
-        {tenderAmountInCents < balanceInCents && (
+        {(isCashTender ? tenderAmountInCents < balanceInCents : appliedAmountInCents < balanceInCents) && (
           <p
             data-testid="payment-warning"
             role="status"
@@ -257,6 +308,17 @@ export function PaymentCheckoutModal({
           >
             <TriangleAlert className="h-4 w-4" aria-hidden="true" />
             Below balance — this will be recorded as a split tender
+          </p>
+        )}
+
+        {typedAmountExceedsBalance && (
+          <p
+            data-testid="payment-over-tender-notice"
+            role="status"
+            className="flex items-center gap-2 rounded-xl border border-danger/40 bg-danger/10 px-3 py-2 font-mono text-xs uppercase tracking-widest text-danger"
+          >
+            <TriangleAlert className="h-4 w-4" aria-hidden="true" />
+            {METHOD_LABEL[method]} applies to the balance only — no change is returned
           </p>
         )}
 

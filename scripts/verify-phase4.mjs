@@ -319,6 +319,13 @@ async function run({ browser, baseUrl }) {
     Math.max(0, quickTender - remainingAfterSplit),
   );
 
+  // Finish on card: non-cash settles the exact remainder and never returns change.
+  await page.locator('[data-testid="payment-method-credit_card"]').tap();
+  runner.checkEqual(
+    'card tender clamps the change drawer to zero',
+    await page.locator('[data-testid="payment-change"]').getAttribute('data-amount-cents'),
+    '0',
+  );
   await page.locator('[data-testid="payment-settle"]').tap();
   await page.waitForSelector('[data-testid="ticket-empty"]', { timeout: 15000 });
   runner.check('settling the ticket starts a fresh one', await page.locator('[data-testid="ticket-empty"]').isVisible());
@@ -352,10 +359,17 @@ async function run({ browser, baseUrl }) {
         total: order.summary.finalPayableInCents,
         hasCompletedAt: Boolean(order.completedAt),
         tableId: order.tableId ?? null,
+        cashPaid: order.payments
+          .filter((payment) => payment.method === 'cash')
+          .reduce((sum, payment) => sum + payment.amountInCents, 0),
+        cardPaid: order.payments
+          .filter((payment) => payment.method === 'credit_card' || payment.method === 'debit_card')
+          .reduce((sum, payment) => sum + payment.amountInCents, 0),
       })),
       tableStatus: Object.fromEntries(tables.map((table) => [table.label, table.status])),
       sessionTotals: sessions.map((session) => ({
         cash: session.totalCashReceivedInCents,
+        card: session.totalCardReceivedInCents,
       })),
     };
   });
@@ -373,6 +387,26 @@ async function run({ browser, baseUrl }) {
   runner.checkGreaterThan(
     'shift drawer accumulated the cash tenders',
     settledOrder.sessionTotals[0].cash,
+    0,
+  );
+
+  // FIN-01/CONC-01: the drawer, the ticket and the table move in one
+  // transaction, so the drawer can never drift away from the settled ledger.
+  const expectedCash = settledOrder.orders.reduce((sum, order) => sum + order.cashPaid, 0);
+  const expectedCard = settledOrder.orders.reduce((sum, order) => sum + order.cardPaid, 0);
+  runner.checkEqual(
+    'drawer cash equals the sum of persisted cash payments',
+    settledOrder.sessionTotals[0].cash,
+    expectedCash,
+  );
+  runner.checkEqual(
+    'drawer card equals the sum of persisted card payments',
+    settledOrder.sessionTotals[0].card,
+    expectedCard,
+  );
+  runner.checkGreaterThan(
+    'card tenders are accumulated in the drawer',
+    expectedCard,
     0,
   );
 

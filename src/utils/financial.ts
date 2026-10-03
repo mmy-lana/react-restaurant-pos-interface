@@ -135,8 +135,13 @@ export const FinancialEngine = {
   },
 
   /**
-   * Creates an immutable payment record. `tenderAmountInCents` is what the
-   * guest physically handed over, which may exceed `amountInCents` for cash.
+   * Creates an immutable payment record.
+   *
+   * `tenderAmountInCents` is the money physically handed over, which may exceed
+   * the applied amount — but only for cash. A card, gift card or wallet tender
+   * is settled at exactly `amountInCents`: over-tendering is not a thing at a
+   * terminal, and reporting change for it would inflate the drawer with money
+   * that was never collected.
    */
   buildPaymentRecord(
     orderId: UUID,
@@ -146,14 +151,18 @@ export const FinancialEngine = {
     transactionReference?: string,
   ): PaymentRecord {
     const appliedAmount = Math.max(0, amountInCents);
-    const changeReturnedInCents = Math.max(0, tenderAmountInCents - appliedAmount);
+    const isCashTender = method === 'cash';
+    const effectiveTender = isCashTender ? Math.max(0, tenderAmountInCents) : appliedAmount;
+    const changeReturnedInCents = isCashTender
+      ? Math.max(0, effectiveTender - appliedAmount)
+      : 0;
 
     return {
       id: createUuid(),
       orderId,
       method,
       amountInCents: appliedAmount,
-      tenderAmountInCents: Math.max(0, tenderAmountInCents),
+      tenderAmountInCents: effectiveTender,
       changeReturnedInCents,
       ...(transactionReference ? { transactionReference } : {}),
       processedAt: new Date().toISOString(),
@@ -161,10 +170,14 @@ export const FinancialEngine = {
   },
 
   /**
-   * Allocates the next `POS-YYYYMMDD-XXXX` sequence inside a transaction so two
-   * terminals writing simultaneously cannot mint the same number.
+   * Allocates the next `POS-YYYYMMDD-XXXX` ticket number and **reserves** it.
    *
-   * The increment loop also closes gaps produced by voided tickets.
+   * Counting persisted orders alone is not enough: two terminals could both
+   * read the same count and mint the same number before either ticket is
+   * written. The reservation counter lives in the same read-write transaction,
+   * and Dexie serialises overlapping transactions across tabs, so the number is
+   * burned the moment it is handed out. The probe loop still closes gaps left by
+   * voided tickets.
    */
   async generateOrderNumber(posDb: POSDatabase): Promise<string> {
     const now = new Date();
@@ -173,10 +186,11 @@ export const FinancialEngine = {
     const day = String(now.getDate()).padStart(2, '0');
     const datePrefix = `POS-${year}${month}${day}`;
 
-    return await posDb.transaction('rw', posDb.orders, async () => {
-      const existingCount = await posDb.orders.where('orderNumber').startsWith(datePrefix).count();
+    return await posDb.transaction('rw', [posDb.orders, posDb.counters], async () => {
+      const reservation = await posDb.counters.get(datePrefix);
+      const persistedCount = await posDb.orders.where('orderNumber').startsWith(datePrefix).count();
 
-      let sequence = existingCount + 1;
+      let sequence = Math.max(reservation?.value ?? 0, persistedCount) + 1;
       let orderCandidate = `${datePrefix}-${String(sequence).padStart(4, '0')}`;
 
       // Loop handles sequence gaps from voided orders on the same day.
@@ -185,6 +199,12 @@ export const FinancialEngine = {
         sequence += 1;
         orderCandidate = `${datePrefix}-${String(sequence).padStart(4, '0')}`;
       }
+
+      await posDb.counters.put({
+        key: datePrefix,
+        value: sequence,
+        updatedAt: now.toISOString(),
+      });
 
       return orderCandidate;
     });
