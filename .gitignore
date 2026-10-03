@@ -7,3 +7,6 @@ dist-ssr
 .DS_Store
 Thumbs.db
 repomix-output.xml
+.pnpm-store
+.verify
+*.png

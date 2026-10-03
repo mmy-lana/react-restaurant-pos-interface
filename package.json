@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "preview": "vite preview",
+    "verify": "node scripts/verify-phase1.mjs"
   },
   "dependencies": {
     "clsx": "latest",
@@ -25,6 +27,7 @@
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "@vitejs/plugin-react": "latest",
+    "playwright": "^1.63.0",
     "tailwindcss": "latest",
     "typescript": "latest",
     "vite": "latest"
