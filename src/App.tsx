@@ -1,6 +1,7 @@
 import { AlertTriangle, Database, Loader2, RotateCcw, ShieldCheck } from 'lucide-react';
 import { POSProvider } from '@/context/POSContext';
 import { PrimitivesShowcase } from '@/components/showcase/PrimitivesShowcase';
+import { MoleculesShowcase } from '@/components/showcase/MoleculesShowcase';
 import { usePOS } from '@/hooks/usePOS';
 import { formatCents } from '@/utils/financial';
 
@@ -127,9 +128,19 @@ function BootConsole(): React.JSX.Element {
 }
 
 export default function App(): React.JSX.Element {
-  const showPrimitivesShowcase =
-    typeof window !== 'undefined' &&
-    new URLSearchParams(window.location.search).get('showcase') === 'primitives';
+  const showcase =
+    typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('showcase');
 
-  return <POSProvider>{showPrimitivesShowcase ? <PrimitivesShowcase /> : <BootConsole />}</POSProvider>;
+  const screen = (() => {
+    switch (showcase) {
+      case 'primitives':
+        return <PrimitivesShowcase />;
+      case 'molecules':
+        return <MoleculesShowcase />;
+      default:
+        return <BootConsole />;
+    }
+  })();
+
+  return <POSProvider>{screen}</POSProvider>;
 }
